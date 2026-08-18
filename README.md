@@ -215,6 +215,7 @@ exclude:                    # extra globs that are not prompts
 options:                    # default CLI flags for this folder
   chrome_profile: ~/.chrome-ideogram-automation
   force_background_removal: true
+  max_file_size: 1200       # compress anything above 1200 KB
   min_gap: 6
   max_gap: 12
 ```
@@ -293,6 +294,61 @@ mistake for a finished one.
 `progress.json` is plain, readable JSON — one entry per id with its status,
 attempt count, timestamps, the last error, the provider's image id, and notes
 such as `background removed (rembg)` or `kept native 1024x1024`.
+
+### Keeping file size down
+
+Transparent PNGs from a 2K generator are big — 4-5 MB each is normal, and 500 of
+them is over 2 GB. `--max-file-size` compresses anything above a limit you set,
+**without ever changing the resolution**:
+
+```bash
+./imagegen-cli run ~/my-images --max-file-size          # limit = 1200 KB (the default)
+./imagegen-cli run ~/my-images --max-file-size 800      # limit = 800 KB
+./imagegen-cli run ~/my-images                          # no compression at all
+```
+
+Or set it once per folder in `imagegen.yaml`:
+
+```yaml
+options:
+  max_file_size: 1200
+```
+
+Images already under the limit are left untouched, bit for bit. Anything over it
+is reduced by shrinking the colour palette, starting from the highest quality
+that fits rather than jumping to the smallest, and the resulting size and colour
+count are recorded as a `note:` and in `progress.json`:
+
+```
+  ✓  1728x2304  transparent  853KB  34s
+  · compressed 5300KB -> 853KB at 1728x2304 (palette, 256 colours)
+```
+
+Real results from 2K portraits with the 1200 KB default: 3961 KB → 571 KB,
+4912 KB → 809 KB, 5300 KB → 853 KB, all at their original pixel dimensions and
+with transparency intact.
+
+Two things worth knowing:
+
+- **Results usually land well under the limit.** PNG's only lossy lever is the
+  colour palette, which caps at 256 entries; the next quality tier up is full
+  truecolour, which is the 4 MB file you started with. So there is nothing
+  between "about 600-900 KB" and "4 MB", and the tool takes the best one that
+  fits rather than padding up to your number.
+- **Install `pngquant` for better-looking results.** When it is on your `PATH` it
+  is used instead of the built-in quantizer — same size, noticeably better
+  gradients and edges, because it dithers. Without it, Pillow's octree quantizer
+  is used, which is still visually very close on photographic subjects but flatter
+  in smooth areas.
+
+  ```bash
+  sudo apt install pngquant       # Debian/Ubuntu
+  brew install pngquant           # macOS
+  ```
+
+Compression runs after background removal, so a cut-out is compressed with its
+alpha already in place. Transparency survives — it moves into the palette, which
+is why a compressed file reports mode `P` rather than `RGBA`.
 
 ---
 
@@ -393,6 +449,7 @@ log. Force either way with `--color always|never`.
 | `--redo-changed` | off | re-queue done items whose prompt was edited |
 | `--no-reconcile` | off | do not adopt images already on disk as done |
 | `--force-background-removal` | off | cut out the background when one is really there (§7) |
+| `--max-file-size KB` | off | compress images over this size, keeping resolution; bare flag means 1200 KB |
 | `--allow-upscale` | off | resize up to `size:` instead of keeping native resolution |
 | `--max-attempts N` | 3 | tries per image |
 | `--retry-backoff S` | 5.0 | seconds × attempt to wait before retrying |

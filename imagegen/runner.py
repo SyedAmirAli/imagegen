@@ -214,6 +214,7 @@ class Runner:
                         self.opts.force_background_removal and not job.forbids_transparency
                     ),
                     allow_upscale=self.opts.allow_upscale,
+                    max_file_bytes=self.opts.max_file_bytes,
                 )
                 self.progress.mark_done(
                     job.id,

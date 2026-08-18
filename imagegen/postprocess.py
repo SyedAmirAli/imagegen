@@ -10,6 +10,9 @@ carries a real alpha cut-out is left completely untouched.
 from __future__ import annotations
 
 import io
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,6 +27,86 @@ TRANSPARENT_MIN_FRACTION = 0.01
 # Border-colour spread (0-255, per channel) still considered a flat backdrop.
 FLAT_BORDER_TOLERANCE = 18
 FLOODFILL_THRESHOLD = 32
+
+# Colour-count ladder for compression, highest quality first. PNG palettes hold
+# at most 256 entries, so this is the entire range available.
+COLOUR_LADDER = (256, 192, 128, 96, 64, 48, 32)
+
+
+# ---------------------------------------------------------------------------
+# compression
+# ---------------------------------------------------------------------------
+
+def _pngquant_available() -> bool:
+    return shutil.which("pngquant") is not None
+
+
+def _pngquant(src: Path, colours: int) -> bytes | None:
+    """Quantize with pngquant, which dithers and handles alpha far better."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        out = Path(tmp.name)
+    try:
+        result = subprocess.run(
+            ["pngquant", "--force", "--strip", "--speed", "1",
+             str(colours), "--output", str(out), str(src)],
+            capture_output=True, timeout=180,
+        )
+        # exit 98/99 mean "could not reach the quality floor"; anything written
+        # is still usable, so judge by the file rather than the status code.
+        if out.is_file() and out.stat().st_size > 0:
+            return out.read_bytes()
+        del result
+        return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        out.unlink(missing_ok=True)
+
+
+def _quantize_pillow(im: Image.Image, colours: int) -> bytes:
+    quantized = im.quantize(colors=colours, method=Image.FASTOCTREE)
+    buf = io.BytesIO()
+    quantized.save(buf, "PNG", optimize=True, compress_level=9)
+    return buf.getvalue()
+
+
+def compress_to_limit(dest: Path, max_bytes: int) -> str | None:
+    """Shrink `dest` below max_bytes, keeping its resolution. Returns a note.
+
+    Only ever reduces the colour palette — never the pixel dimensions — so the
+    image stays usable at the size it was generated for. Works down the ladder
+    from the highest quality that fits, rather than jumping straight to the
+    smallest, so an image barely over the limit is barely touched.
+    """
+    original = dest.stat().st_size
+    if original <= max_bytes:
+        return None
+
+    im = Image.open(dest)
+    im.load()
+    if im.mode != "RGBA":
+        im = im.convert("RGBA")
+    size = im.size
+
+    use_pngquant = _pngquant_available()
+    best: bytes | None = None
+    for colours in COLOUR_LADDER:
+        data = _pngquant(dest, colours) if use_pngquant else None
+        if data is None:
+            data = _quantize_pillow(im, colours)
+        if best is None or len(data) < len(best):
+            best = data
+        if len(data) <= max_bytes:
+            dest.write_bytes(data)
+            tool = "pngquant" if use_pngquant else "palette"
+            return (f"compressed {original // 1024}KB -> {len(data) // 1024}KB "
+                    f"at {size[0]}x{size[1]} ({tool}, {colours} colours)")
+
+    if best is not None and len(best) < original:
+        dest.write_bytes(best)
+        return (f"compressed {original // 1024}KB -> {len(best) // 1024}KB, still above "
+                f"the {max_bytes // 1024}KB limit (32 colours is as far as PNG goes)")
+    return f"could not compress below {max_bytes // 1024}KB without resizing; left as generated"
 
 
 @dataclass
@@ -41,6 +124,11 @@ class Result:
 # ---------------------------------------------------------------------------
 
 def transparent_fraction(im: Image.Image) -> float:
+    # A palette image keeps its transparency in the palette, not in an A band,
+    # which is exactly what a compressed output looks like — convert first or
+    # every quantized image reports itself as opaque.
+    if im.mode in ("P", "PA") or "transparency" in im.info:
+        im = im.convert("RGBA")
     if "A" not in im.getbands():
         return 0.0
     alpha = np.asarray(im.getchannel("A"))
@@ -147,6 +235,7 @@ def save_png(
     size: tuple[int, int] | None,
     force_background_removal: bool,
     allow_upscale: bool = False,
+    max_file_bytes: int | None = None,
 ) -> Result:
     im = Image.open(io.BytesIO(raw))
     im.load()
@@ -181,11 +270,16 @@ def save_png(
     im.save(tmp, "PNG", optimize=True)
     tmp.replace(dest)   # never leave a half-written file where a resume can adopt it
 
+    if max_file_bytes:
+        note = compress_to_limit(dest, max_file_bytes)
+        if note:
+            notes.append(note)
+
     return Result(
         path=dest,
         src_size=src_size,
         out_size=out_size,
         bytes_written=dest.stat().st_size,
-        transparent=has_cutout_alpha(im),
+        transparent=has_cutout_alpha(Image.open(dest)),
         notes=notes,
     )

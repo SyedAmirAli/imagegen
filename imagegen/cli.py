@@ -204,6 +204,11 @@ def cmd_run(args) -> int:
         + ui.paint(f" to generate · already done {done_now}/{len(jobs)}", ui.C.GREY))
     if applied:
         log(f"config   defaults from imagegen.yaml: {', '.join(applied)}")
+    if args.max_file_size is not None and args.max_file_size <= 0:
+        raise SystemExit("--max-file-size must be a positive number of KB")
+    if args.max_file_size:
+        log(ui.paint(f"compressing any image over {args.max_file_size}KB "
+                     "(resolution preserved)", ui.C.GREY))
     if args.force_background_removal:
         log("background removal is FORCED for every prompt that does not ask for an "
             "opaque background (images that already have alpha are left untouched)")
@@ -228,6 +233,7 @@ def cmd_run(args) -> int:
         max_gap=max(args.max_gap, args.min_gap),
         force_background_removal=args.force_background_removal,
         allow_upscale=args.allow_upscale,
+        max_file_bytes=args.max_file_size * 1024 if args.max_file_size else None,
         debug_dir=paths.debug,
     )
 
@@ -357,6 +363,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="after download, cut out the background when the image "
                             "came back with none (skipped when it is already transparent, "
                             "and for prompts that ask for an opaque background)")
+    p_run.add_argument("--max-file-size", type=int, nargs="?", const=1200, default=None,
+                       metavar="KB",
+                       help="compress any image larger than this many KB, keeping its "
+                            "resolution (bare flag = 1200 KB)")
     p_run.add_argument("--allow-upscale", action="store_true",
                        help="resize up to the requested size instead of keeping native")
     p_run.add_argument("--max-attempts", type=int, default=3, help="tries per image (default: 3)")

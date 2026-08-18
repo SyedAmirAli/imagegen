@@ -33,7 +33,7 @@ class C:
     BLUE = "\x1b[34m"
     MAGENTA = "\x1b[35m"
     CYAN = "\x1b[36m"
-    GREY = "\x1b[90m"
+    GREY = "\x1b[37m"
     BG_GREEN = "\x1b[42m"
 
 
