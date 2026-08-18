@@ -36,6 +36,16 @@ class Backend(abc.ABC):
 
     def __init__(self, args):
         self.args = args
+        # Set by the runner. Lets a backend report what it is waiting on while a
+        # single generation is in flight, instead of the terminal going quiet.
+        self.progress_hook = None
+
+    def report(self, stage: str, fraction: float | None = None) -> None:
+        if self.progress_hook is not None:
+            try:
+                self.progress_hook(stage, fraction)
+            except Exception:
+                pass   # presentation must never break a run
 
     @abc.abstractmethod
     def open(self) -> None:

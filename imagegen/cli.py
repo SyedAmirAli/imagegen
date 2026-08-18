@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import __version__, backends, prompts
+from . import __version__, backends, prompts, ui
 from .logging_utils import attach_file, log, rule
 from .progress import Progress
 from .prompts import PromptError
@@ -130,7 +130,7 @@ def cmd_status(args) -> int:
     jobs = _load(paths)
     progress = Progress(paths.state, paths.prompt_dir.name, args.backend)
     progress.sync(jobs)
-    progress.reconcile(jobs)
+    progress.reconcile(jobs)   # counts below must reflect what is really there
     counts = {"pending": 0, "done": 0, "failed": 0, "skipped": 0}
     for item in progress.data["items"].values():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
@@ -175,7 +175,7 @@ def cmd_run(args) -> int:
     jobs = _load(paths)
     progress = Progress(paths.state, paths.prompt_dir.name, args.backend)
     sync = progress.sync(jobs)
-    adopted = progress.reconcile(jobs) if not args.no_reconcile else 0
+    adopted, requeued = progress.reconcile(jobs) if not args.no_reconcile else (0, 0)
 
     if args.retry_failed:
         n = progress.requeue(("failed",))
@@ -189,22 +189,25 @@ def cmd_run(args) -> int:
     selected = _select(jobs, args)
     queue = [j for j in selected if progress.get(j.id)["status"] == "pending"]
 
-    rule("=")
-    log(f"imagegen {__version__} · backend {args.backend} · {paths.prompt_dir}")
-    log(f"output   {paths.out_dir}")
-    log(f"prompts  {len(jobs)} total"
+    rule("━")
+    log(ui.paint(f"imagegen {__version__}", ui.C.BOLD, ui.C.CYAN)
+        + ui.paint(f"  ·  {args.backend}  ·  {paths.prompt_dir}", ui.C.GREY))
+    log(ui.paint("output   ", ui.C.GREY) + str(paths.out_dir))
+    log(ui.paint("prompts  ", ui.C.GREY) + f"{len(jobs)} total"
         + (f", {sync['added']} new" if sync["added"] else "")
         + (f", {sync['changed']} edited" if sync["changed"] else "")
-        + (f", {adopted} adopted from disk" if adopted else ""))
+        + (f", {adopted} adopted from disk" if adopted else "")
+        + (ui.paint(f", {requeued} missing from disk", ui.C.YELLOW) if requeued else ""))
     # counted live: progress.counts is only refreshed on save, which a dry run skips
     done_now = sum(1 for j in jobs if progress.get(j.id)["status"] == "done")
-    log(f"queue    {len(queue)} to generate · already done {done_now}/{len(jobs)}")
+    log(ui.paint("queue    ", ui.C.GREY) + ui.paint(f"{len(queue)}", ui.C.BOLD)
+        + ui.paint(f" to generate · already done {done_now}/{len(jobs)}", ui.C.GREY))
     if applied:
         log(f"config   defaults from imagegen.yaml: {', '.join(applied)}")
     if args.force_background_removal:
         log("background removal is FORCED for every prompt that does not ask for an "
             "opaque background (images that already have alpha are left untouched)")
-    rule("=")
+    rule("━")
 
     if args.dry_run:
         for job in queue[: args.limit or len(queue)]:
@@ -231,13 +234,20 @@ def cmd_run(args) -> int:
     with RunLock(paths.lock):
         stats = Runner(backend=backend, progress=progress, jobs=jobs, opts=opts).run(queue)
 
-    rule("-")
-    log(f"session: {stats.generated} generated, {stats.failed} failed"
-        + (" (interrupted)" if stats.interrupted else ""))
-    log(f"total:   {progress.counts['done']}/{len(jobs)} done, "
-        f"{progress.counts['pending']} pending, {progress.counts['failed']} failed")
-    if progress.counts["pending"] or progress.counts["failed"]:
-        log("rerun the same command to continue where this stopped")
+    rule("━")
+    done, pending, failed = (progress.counts["done"], progress.counts["pending"],
+                             progress.counts["failed"])
+    log(ui.paint("session  ", ui.C.GREY)
+        + ui.paint(f"✓ {stats.generated} generated", ui.C.GREEN)
+        + (ui.paint(f"   ✗ {stats.failed} failed", ui.C.RED) if stats.failed else "")
+        + (ui.paint("   (interrupted)", ui.C.YELLOW) if stats.interrupted else "")
+        + ui.paint(f"   in {ui.duration(stats.elapsed)}", ui.C.GREY))
+    log(ui.paint("total    ", ui.C.GREY) + ui.bar(done / max(1, len(jobs)), 18)
+        + f"  {done}/{len(jobs)} done"
+        + ui.paint(f" · {pending} pending", ui.C.GREY)
+        + (ui.paint(f" · {failed} failed", ui.C.RED) if failed else ""))
+    if pending or failed:
+        log(ui.paint("rerun the same command to continue where this stopped", ui.C.GREY))
     if stats.fatal:
         return 2
     return 1 if stats.failed else 0
@@ -326,6 +336,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--backend", default=backends.DEFAULT_BACKEND,
                        choices=sorted(backends.BACKENDS),
                        help=f"generator backend (default: {backends.DEFAULT_BACKEND})")
+        p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+                       help="colour and live progress display (default: auto-detect)")
 
     p_run = sub.add_parser("run", help="generate everything still pending")
     add_common(p_run)
@@ -393,6 +405,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    choice = getattr(args, "color", "auto")
+    ui.configure(None if choice == "auto" else choice == "always")
     if getattr(args, "_parser", None) is None:
         args._parser = parser
     try:

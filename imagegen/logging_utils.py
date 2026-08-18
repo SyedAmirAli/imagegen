@@ -6,6 +6,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import ui
+
 _LOG_FILE: Path | None = None
 
 
@@ -20,15 +22,19 @@ def attach_file(path: Path) -> None:
 
 
 def log(msg: str, *, err: bool = False) -> None:
-    line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
-    print(line, file=sys.stderr if err else sys.stdout, flush=True)
+    stamp = datetime.now().strftime("%H:%M:%S")
+    ui.clear_live()   # never leave a transient status line half-overwritten
+    print(f"{ui.paint(stamp, ui.C.GREY)} {msg}",
+          file=sys.stderr if err else sys.stdout, flush=True)
     if _LOG_FILE is not None:
         try:
             with _LOG_FILE.open("a") as fh:
-                fh.write(line + "\n")
+                # the file stays plain text: a log full of escape codes cannot be grepped
+                fh.write(f"[{stamp}] {ui.strip(msg)}\n")
         except OSError:
             pass
 
 
-def rule(char: str = "-", width: int = 72) -> None:
-    log(char * width)
+def rule(char: str = "─", width: int = 72, style: str = "") -> None:
+    line = char * width
+    log(ui.paint(line, style) if style else ui.paint(line, ui.C.GREY))

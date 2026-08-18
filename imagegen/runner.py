@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import postprocess
 from .backends import BackendError, FatalBackendError
+from . import ui
 from .logging_utils import log
 from .progress import Progress
 
@@ -30,6 +31,7 @@ class RunStats:
     skipped: int = 0
     interrupted: bool = False
     fatal: str | None = None
+    elapsed: float = 0.0
 
 
 class RunLock:
@@ -82,20 +84,59 @@ class Runner:
         self.jobs = {job.id: job for job in jobs}
         self.opts = opts
         self.stats = RunStats()
+        self.clock = ui.Clock()
+        self._done = 0
+        self._total = 0
+        self._stage = ""
+        self._stage_fraction = None
+        self._spin = 0
         self._stop = False
+        backend.progress_hook = self._on_backend_progress
         signal.signal(signal.SIGINT, self._on_sigint)
         signal.signal(signal.SIGTERM, self._on_sigint)
+
+    SPINNER = "⣾⣽⣻⢿⡿⣟⣯⣷"
+
+    def _on_backend_progress(self, stage: str, fraction: float | None) -> None:
+        self._stage, self._stage_fraction = stage, fraction
+        self._render()
+
+    def _render(self) -> None:
+        """One transient line holding the whole picture: batch, item, ETA."""
+        if not ui.colour_enabled() or not self._total:
+            return
+        self._spin = (self._spin + 1) % len(self.SPINNER)
+        fraction = self._done / self._total
+        parts = [
+            ui.paint(self.SPINNER[self._spin], ui.C.CYAN),
+            ui.paint(f"{self._done}/{self._total}", ui.C.BOLD),
+            ui.bar(fraction, 18),
+            f"{fraction * 100:4.1f}%",
+        ]
+        tally = ui.paint(f"✓{self.stats.generated}", ui.C.GREEN)
+        if self.stats.failed:
+            tally += " " + ui.paint(f"✗{self.stats.failed}", ui.C.RED)
+        parts.append(tally)
+        if self._stage:
+            stage = self._stage
+            if self._stage_fraction is not None:
+                stage += f" {self._stage_fraction * 100:.0f}%"
+            parts.append(ui.paint(stage, ui.C.MAGENTA))
+        parts.append(ui.paint(
+            f"{ui.duration(self.clock.elapsed)} elapsed · eta "
+            f"{self.clock.eta(self._total - self._done)}", ui.C.GREY))
+        ui.live(" " + ui.paint(" · ", ui.C.GREY).join(parts))
 
     def _on_sigint(self, signum, frame) -> None:
         if self._stop:   # second Ctrl-C: give up immediately
             raise KeyboardInterrupt
         self._stop = True
-        log("! interrupt received — finishing the current image, then stopping cleanly")
+        log(ui.paint("! interrupt received — finishing the current image, then stopping cleanly", ui.C.YELLOW, ui.C.BOLD))
 
     # ----------------------------------------------------------------- run
 
     def run(self, queue: list) -> RunStats:
-        total = len(queue)
+        total = self._total = len(queue)
         try:
             self.backend.open()
         except FatalBackendError as exc:
@@ -111,7 +152,7 @@ class Runner:
                     log(f"--limit {self.opts.limit} reached")
                     break
                 if index > 1 and not self._stop:
-                    time.sleep(random.uniform(self.opts.min_gap, self.opts.max_gap))
+                    self._wait(random.uniform(self.opts.min_gap, self.opts.max_gap))
                 self._run_one(job, index, total)
         except Stop:
             pass
@@ -119,21 +160,43 @@ class Runner:
             self.stats.interrupted = True
             log("! hard interrupt", err=True)
         finally:
+            ui.clear_live()
             self.progress.save()
             self.backend.close()
 
         self.stats.interrupted = self.stats.interrupted or self._stop
+        self.stats.elapsed = self.clock.elapsed
         return self.stats
+
+    def _wait(self, seconds: float) -> None:
+        """Pause between generations, keeping the status line alive."""
+        deadline = time.time() + seconds
+        while time.time() < deadline and not self._stop:
+            self._stage = f"pausing {deadline - time.time():.0f}s"
+            self._stage_fraction = None
+            self._render()
+            time.sleep(min(0.12, max(0.0, deadline - time.time())))
 
     def _run_one(self, job, index: int, total: int) -> None:
         item = self.progress.get(job.id)
         item["started_at"] = item.get("started_at") or _now()
-        spec = " ".join(filter(None, [
+        spec = " · ".join(filter(None, [
             job.aspect or "",
             f"{job.size[0]}x{job.size[1]}" if job.size else "",
-            job.background,
+            job.background if job.background != "unspecified" else "",
         ]))
-        log(f"[{index}/{total}] {job.id}  ({spec})  -> {job.rel_output}")
+        counter = ui.paint(f"[{index}/{total}]", ui.C.GREY)
+        head = f"{counter} {ui.paint(job.id, ui.C.BOLD)}  {ui.paint(spec, ui.C.GREY)}"
+        tail = ui.paint(f"  → {job.rel_output}", ui.C.GREY)
+        # One line per image: at 500 images a second line doubles the scrollback
+        # for a path the ✓ line already implies. It only wraps to its own line
+        # when the terminal is genuinely too narrow.
+        if len(ui.strip(head + tail)) + 9 <= ui.width():
+            log(head + tail)
+        else:
+            log(head)
+            log(" " * (len(f"[{index}/{total}]") + 1) + tail.lstrip())
+        item_started = time.time()
 
         for attempt in range(1, self.opts.max_attempts + 1):
             if self._stop:
@@ -158,11 +221,18 @@ class Runner:
                     notes=saved.notes,
                 )
                 self.stats.generated += 1
-                alpha = "transparent" if saved.transparent else "opaque"
-                log(f"   ok  {saved.out_size[0]}x{saved.out_size[1]}  {alpha}  "
-                    f"{saved.bytes_written // 1024}KB")
+                self._done += 1
+                self.clock.record(time.time() - item_started)
+                alpha = ("transparent", ui.C.CYAN) if saved.transparent else ("opaque", ui.C.YELLOW)
+                log("  " + ui.paint("✓", ui.C.GREEN, ui.C.BOLD)
+                    + f"  {saved.out_size[0]}x{saved.out_size[1]}"
+                    + f"  {ui.paint(alpha[0], alpha[1])}"
+                    + f"  {ui.paint(ui.size_bytes(saved.bytes_written), ui.C.GREY)}"
+                    + f"  {ui.paint(ui.duration(time.time() - item_started), ui.C.GREY)}")
                 for note in saved.notes:
-                    log(f"   note: {note}")
+                    log("  " + ui.paint(f"· {note}", ui.C.GREY))
+                self._stage = ""
+                self._render()
                 return
 
             except FatalBackendError as exc:
@@ -176,15 +246,19 @@ class Runner:
                 msg = f"{type(exc).__name__}: {exc}"
                 # Playwright puts the actionability reason at the END of its call
                 # log, so truncating the message hides the actual cause.
-                log(f"   attempt {attempt}/{self.opts.max_attempts} failed — {msg}")
+                log("  " + ui.paint("⚠", ui.C.YELLOW, ui.C.BOLD)
+                    + ui.paint(f"  attempt {attempt}/{self.opts.max_attempts} failed — ", ui.C.YELLOW)
+                    + msg)
                 item["error"] = msg[:4000]
                 shot = self.opts.debug_dir / f"{_safe(job.id)}_a{attempt}.png"
                 if self.backend.snapshot(shot):
-                    log(f"   screenshot: {shot}")
+                    log("  " + ui.paint(f"· screenshot: {shot}", ui.C.GREY))
                 if attempt == self.opts.max_attempts:
                     self.progress.mark_failed(job.id, msg)
                     self.stats.failed += 1
-                    log(f"   giving up on {job.id}")
+                    self._done += 1
+                    log("  " + ui.paint("✗", ui.C.RED, ui.C.BOLD)
+                        + ui.paint(f"  gave up on {job.id}", ui.C.RED))
                 else:
                     time.sleep(self.opts.retry_backoff * attempt)
                     self.backend.recover()

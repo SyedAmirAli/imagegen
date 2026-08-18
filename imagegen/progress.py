@@ -114,20 +114,35 @@ class Progress:
                 item.pop("orphaned", None)
         return stats
 
-    def reconcile(self, jobs) -> int:
-        """Promote items whose output already exists on disk to `done`."""
-        fixed = 0
+    def reconcile(self, jobs) -> tuple[int, int]:
+        """Make the state agree with what is actually on disk.
+
+        Both directions matter. Adopting files the state does not know about is
+        what makes a hard crash recoverable. Re-queueing a `done` item whose
+        image has been deleted is what makes "delete it and run again" work —
+        the obvious way to redo one image you were not happy with.
+
+        Returns (adopted, requeued).
+        """
+        adopted = requeued = 0
         for job in jobs:
             item = self.data["items"].get(job.id)
-            if item is None or item["status"] == "done":
+            if item is None:
                 continue
-            if job.output.is_file() and job.output.stat().st_size > 0:
+            on_disk = job.output.is_file() and job.output.stat().st_size > 0
+            if on_disk and item["status"] != "done":
                 item["status"] = "done"
                 item["finished_at"] = item.get("finished_at") or now_iso()
                 item["error"] = None
                 item.setdefault("notes", []).append("adopted existing file on disk")
-                fixed += 1
-        return fixed
+                adopted += 1
+            elif not on_disk and item["status"] == "done":
+                item["status"] = "pending"
+                item["attempts"] = 0
+                item["error"] = None
+                item["notes"] = ["output file was removed, queued to regenerate"]
+                requeued += 1
+        return adopted, requeued
 
     def requeue(self, statuses: tuple[str, ...]) -> int:
         n = 0

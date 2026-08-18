@@ -337,7 +337,10 @@ Every decision is recorded per item in `progress.json` and printed as a `note:`.
 - **Already-generated items are skipped.** Rerunning the same command is always
   safe and always cheap.
 - **Deleting `progress.json` is safe.** The next run adopts every image already
-  on disk as done and queues only the rest. `--no-reconcile` opts out.
+  on disk as done and queues only the rest.
+- **Deleting an image regenerates it.** Reconciliation runs both ways, so
+  removing a PNG you were not happy with re-queues exactly that one on the next
+  run. `--no-reconcile` opts out of both directions.
 - **Failures are kept, not lost.** An item that fails all its attempts is marked
   `failed` with its error and a screenshot in `.imagegen/debug/`. Re-queue them
   with `--retry-failed`.
@@ -351,6 +354,27 @@ Every decision is recorded per item in `progress.json` and printed as a `note:`.
   automatically.
 - **`Ctrl-C` finishes the current image and exits cleanly.** Press it twice to
   stop immediately.
+
+### While it runs
+
+In an interactive terminal the run shows a single live status line that stays
+current instead of scrolling:
+
+```
+[12/497] 01-012-business-professional-012  2:3 · 2048x2048 · transparent  → 01-business-professional/business-professional-012.png
+  ✓  1664x2496  transparent  2.3MB  31s
+  · kept native 1664x2496 (requested 2048x2048 would upscale)
+ ⣾ · 12/497 · ███░░░░░░░░░░░░░░░ ·  2.4% · ✓11 ✗1 · rendering 45% · 6m12s elapsed · eta 3h58m
+```
+
+The percentage during `rendering` is Ideogram's own progress for your image, read
+from its API rather than guessed, so a slow generation is visibly moving rather
+than apparently hung. The ETA is a rolling average of recent images.
+
+Colour and the live line are used only when stdout is an interactive terminal.
+Piped or redirected output is plain text, `NO_COLOR` is honoured, and
+`.imagegen/run.log` never contains escape codes — a log you cannot grep is not a
+log. Force either way with `--color always|never`.
 
 ---
 
@@ -374,6 +398,7 @@ Every decision is recorded per item in `progress.json` and printed as a `note:`.
 | `--retry-backoff S` | 5.0 | seconds × attempt to wait before retrying |
 | `--min-gap` / `--max-gap` | 4 / 9 | random pause between generations, in seconds |
 | `--dry-run` | off | print what would be generated and exit, writing nothing |
+| `--color` | `auto` | `auto`, `always` or `never` for colour and the live status line |
 | `--state PATH` | `.imagegen/progress.json` | override the state file location |
 
 Ideogram backend flags: `--cdp-url` (default `http://127.0.0.1:9222`),

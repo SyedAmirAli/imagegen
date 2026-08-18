@@ -349,6 +349,7 @@ class IdeogramBackend(Backend):
         self._requests.clear()
         self._last_submit_status = None
         submitted_at = time.time()
+        self.report("submitting", 0.0)
         self._page.locator(GENERATE_BUTTON).first.click()
 
         deadline = submitted_at + self.args.gen_timeout
@@ -362,6 +363,7 @@ class IdeogramBackend(Backend):
                 )
             entry = self._find_request(prompt, submitted_at)
             if entry is None:
+                self.report("waiting for Ideogram to accept", 0.0)
                 if time.time() - submitted_at > self.args.accept_timeout:
                     raise BackendError(
                         f"Ideogram never registered the request within "
@@ -369,7 +371,9 @@ class IdeogramBackend(Backend):
                     )
                 continue
             responses = entry.get("responses") or []
-            done = float(entry.get("completion_percentage") or 0) >= 100
+            percent = float(entry.get("completion_percentage") or 0)
+            self.report("rendering", percent / 100)
+            done = percent >= 100
             if done and responses:
                 return responses[0]["response_id"], entry
 
@@ -420,16 +424,19 @@ class IdeogramBackend(Backend):
         if job.negative and job.negative.strip() not in prompt:
             prompt = f"{prompt}\n\nNEGATIVE PROMPT (avoid entirely): {job.negative.strip()}"
         self._set_prompt(prompt)
+        self.report("setting aspect ratio", None)
         ratio = snap_aspect(job.aspect)
         if ratio:
             if ratio != job.aspect:
                 log(f"   aspect {job.aspect} -> {ratio} (nearest Ideogram offers)")
             self._set_aspect(ratio)
 
+        self.report("typing prompt", None)
         image_id, entry = self._submit_and_wait(prompt)
         got = entry.get("aspect_ratio")
         if ratio and got and got != ratio:
             log(f"   warning: Ideogram generated {got}, not the requested {ratio}")
+        self.report("downloading", 1.0)
         data = self._download(image_id)
         self._generated += 1
         return GenerationResult(data=data, provider_image_id=image_id,

@@ -11,6 +11,7 @@ import hashlib
 import io
 import os
 import random
+import time
 
 from PIL import Image, ImageDraw
 
@@ -25,6 +26,8 @@ class MockBackend(Backend):
         g = parser.add_argument_group("mock backend (testing only)")
         g.add_argument("--mock-fail-rate", type=float, default=0.0,
                        help="probability that a mock generation raises (0-1)")
+        g.add_argument("--mock-delay", type=float, default=0.0,
+                       help="seconds to fake-render, for watching the progress display")
         g.add_argument("--mock-transparent", action="store_true",
                        help="emit an image that already has an alpha cut-out")
 
@@ -34,6 +37,13 @@ class MockBackend(Backend):
     def generate(self, job) -> GenerationResult:
         if random.random() < getattr(self.args, "mock_fail_rate", 0.0):
             raise BackendError("mock failure (injected)")
+
+        delay = getattr(self.args, "mock_delay", 0.0)
+        if delay:
+            steps = max(1, int(delay * 10))
+            for step in range(steps + 1):
+                self.report("rendering", step / steps)
+                time.sleep(delay / steps)
 
         size = job.size or (512, 512)
         digest = hashlib.sha256(job.id.encode()).digest()
