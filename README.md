@@ -9,16 +9,24 @@ crash, a `Ctrl-C` or a closed browser costs at most the image in flight. Rerun t
 identical command and it continues from exactly where it stopped.
 
 ```bash
-./imagegen-cli init     ~/my-images        # scaffold a prompt folder
-./imagegen-cli validate ~/my-images        # parse every prompt, report problems
-./imagegen-cli run      ~/my-images        # generate everything still pending
+./imagegen-cli run      ~/my-images        # a folder of Markdown prompts
+./imagegen-cli run      ~/batch.json       # …or a single JSON manifest
 ./imagegen-cli status   ~/my-images        # how far along am I
-./imagegen-cli spec                        # brief that turns an idea into a prompt folder
+./imagegen-cli validate ~/my-images        # parse everything, report problems
+./imagegen-cli init     ~/my-images        # scaffold a prompt folder
+./imagegen-cli convert  ~/batch.json ~/my-images   # JSON → prompt folder
+./imagegen-cli spec                        # brief that turns an idea into either
 ```
 
-Have an idea or a chat discussion rather than a folder of prompts? Hand
-[`AUTHORING.md`](AUTHORING.md) to any AI and it writes the folder for you — see
-[§5](#5-from-an-idea-to-a-prompt-folder).
+**Two input formats, both first class.** A folder of Markdown prompt files, or a
+single JSON manifest holding the whole batch — including where the images go.
+The JSON route exists because that is what an AI chat can actually hand you: one
+document with four hundred entries, rather than four hundred files in a tree. See
+[§5](#5-json-manifests).
+
+Have an idea or a chat discussion rather than either? Hand
+[`AUTHORING.md`](AUTHORING.md) to any AI and it writes the batch for you — see
+[§6](#6-from-an-idea-to-a-batch).
 
 ---
 
@@ -28,14 +36,15 @@ Have an idea or a chat discussion rather than a folder of prompts? Hand
 2. [The prompt folder](#2-the-prompt-folder)
 3. [Prompt file structure](#3-prompt-file-structure)
 4. [Folder-level settings: `imagegen.yaml`](#4-folder-level-settings-imagegenyaml)
-5. [From an idea to a prompt folder](#5-from-an-idea-to-a-prompt-folder)
-6. [Where output goes](#6-where-output-goes)
-7. [Backgrounds and transparency](#7-backgrounds-and-transparency)
-8. [Resuming, retrying, skipping](#8-resuming-retrying-skipping)
-9. [Command reference](#9-command-reference)
-10. [Chrome and the Ideogram session](#10-chrome-and-the-ideogram-session)
-11. [Adding another generator](#11-adding-another-generator)
-12. [Troubleshooting](#12-troubleshooting)
+5. [JSON manifests](#5-json-manifests)
+6. [From an idea to a batch](#6-from-an-idea-to-a-batch)
+7. [Where output goes](#7-where-output-goes)
+8. [Backgrounds and transparency](#8-backgrounds-and-transparency)
+9. [Resuming, retrying, skipping](#9-resuming-retrying-skipping)
+10. [Command reference](#10-command-reference)
+11. [Chrome and the Ideogram session](#11-chrome-and-the-ideogram-session)
+12. [Adding another generator](#12-adding-another-generator)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
@@ -126,7 +135,7 @@ no backdrop, no ground shadow, no scenery.
 | `output` | no | Where the PNG is written, **relative to the output folder**. Defaults to a slugified version of the prompt's own path, which mirrors your prompt tree into the output tree. Must end in `.png` — see [file naming](#file-naming). |
 | `size` | no | Final pixel size, `WIDTHxHEIGHT`. Omit to keep whatever the generator produces natively. The image is only ever downscaled to this; see `--allow-upscale`. |
 | `aspect` | no | Ratio requested from the generator, e.g. `"1:1"`, `"3:4"`, `"16:9"`. Quote it — bare `16:9` is not valid YAML. Derived from `size` when omitted. A ratio the generator does not offer is snapped to the nearest one it does, and the substitution is logged. |
-| `background` | no | `transparent`, `opaque`, or omitted. This is an instruction to *you and the tool*, not to the model — put the actual wording in the prompt too. See §7. |
+| `background` | no | `transparent`, `opaque`, or omitted. This is an instruction to *you and the tool*, not to the model — put the actual wording in the prompt too. See §8. |
 | `negative` | no | Things to avoid. Ideogram's current composer has no separate negative field, so this is appended to the prompt as `NEGATIVE PROMPT (avoid entirely): …` unless that text already appears in the prompt. |
 
 Any other key you add is preserved and passed through to the backend, so a future
@@ -231,11 +240,104 @@ otherwise a `640x480` prompt would silently be generated as `1:1`.
 
 ---
 
-## 5. From an idea to a prompt folder
+## 5. JSON manifests
 
-You do not have to write the format by hand. If you have an idea, a design brief,
-or a chat session where you worked out what the images should be, hand that plus
-[`AUTHORING.md`](AUTHORING.md) to any AI and let it produce the folder for you.
+A prompt folder is not the only input. `run`, `status` and `validate` all accept
+a **single JSON file** describing the whole batch, and use it directly — no
+intermediate folder, no conversion step:
+
+```bash
+./imagegen-cli run ~/batches/premium-humans.json
+```
+
+This is the format to ask an AI for. A chat session can comfortably produce one
+JSON document with four hundred entries; it cannot hand you four hundred
+Markdown files in a directory tree.
+
+```json
+{
+  "project": "Premium Humans",
+  "output_dir": "premium-humans",
+  "defaults": {
+    "size": "2048x2048",
+    "background": "transparent",
+    "negative": "watermark, text, extra fingers",
+    "prompt_suffix": "crisp clean edges, isolated on a transparent background."
+  },
+  "options": { "max_file_size": 1200 },
+  "images": [
+    {
+      "id": "01-001-founder",
+      "output": "01-portraits/founder.png",
+      "prompt": "A smiling founder in a navy blazer, three-quarter view…",
+      "aspect": "3:4"
+    },
+    {
+      "id": "02-001-team",
+      "output": "02-groups/team.png",
+      "size": "1920x1080",
+      "background": "opaque",
+      "prompt": "Five colleagues standing together…"
+    }
+  ]
+}
+```
+
+### Top-level keys
+
+| Key | Meaning |
+|---|---|
+| `images` | **Required.** The list of images. `assets`, `items`, `prompts` and `entries` are accepted as aliases, and a bare top-level array works too. |
+| `output_dir` | Where images are written, **relative to the JSON file itself** so the manifest stays portable. Absolute paths are allowed. Defaults to `<json-file-folder>/output`, and `--out` overrides it. |
+| `defaults` | Applied to every image, same fields as a folder's `imagegen.yaml` `defaults:` — `size`, `aspect`, `background`, `negative`, `prompt_prefix`, `prompt_suffix`. Unknown keys are ignored, so manifests carrying metadata for other tools load fine. |
+| `options` | Default CLI flags for this batch, e.g. `{"max_file_size": 1200}`. Flags you type still win. |
+| anything else | Ignored. `project`, `generated_at`, `sections` and friends are yours to keep. |
+
+### Per-image keys
+
+Same meanings as the front-matter fields in [§3](#3-prompt-file-structure):
+`id`, `output`, `prompt`, `negative`, `size`, `aspect`, `background`. Only
+`prompt` is truly required — `id` falls back to the entry's position and
+`output` can be assembled from `folder` + `filename`.
+
+Aliases are accepted so existing manifests load unchanged:
+
+| Canonical | Also accepted |
+|---|---|
+| `output` | `output_file`, `relative_path`, `path`, `file`, or `folder` + `filename` |
+| `size` | `dimensions`, or a `width` + `height` pair |
+| `aspect` | `aspect_ratio`, `aspectRatio`, `ratio` |
+| `negative` | `negative_prompt`, `negativePrompt` |
+| `background` | `transparent_background: true/false`, `transparent: true/false` |
+| `id` | `asset_id`, `key`, `slug` |
+
+Output paths get the same safety checks as everywhere else: relative, inside the
+output directory, `.png`, and unique. A bad entry is reported with its position
+(`batch.json[7]: no prompt text`) and the rest of the batch still runs.
+
+### Converting to a prompt folder
+
+If you would rather hand-edit the prompts as Markdown, or keep them in version
+control as separate files, convert once and work in the folder afterwards:
+
+```bash
+./imagegen-cli convert ~/batches/premium-humans.json ~/prompts/premium-humans
+./imagegen-cli run ~/prompts/premium-humans
+```
+
+Each image becomes one Markdown file laid out to mirror the image it produces
+(`01-portraits/founder.png` → `01-portraits/founder.md`), with the settings in
+front-matter. Existing files are kept unless you pass `--force`. Both routes are
+equivalent: converting the 541-asset manifest and loading the result produces
+jobs identical to reading the JSON directly, field for field.
+
+---
+
+## 6. From an idea to a batch
+
+You do not have to write either format by hand. If you have an idea, a design
+brief, or a chat session where you worked out what the images should be, hand that
+plus [`AUTHORING.md`](AUTHORING.md) to any AI and let it produce the batch.
 
 ```bash
 ./imagegen-cli spec | xclip -selection clipboard   # Linux
@@ -243,18 +345,20 @@ or a chat session where you worked out what the images should be, hand that plus
 ./imagegen-cli spec > brief.md
 ```
 
-Paste it into a chat alongside your idea and it writes each file out as a code
-block for you to save. Give it to a coding assistant with access to a directory
-and it creates the folder and the files directly. The brief covers the format,
-the field rules, folder and naming conventions, how to keep a set visually
+The brief asks for **one JSON manifest** by default — the format a chat can
+realistically deliver in a single message. Save what it produces and run it. If
+you would rather have editable Markdown, ask it for a prompt folder instead, or
+convert the JSON afterwards with `convert`; the brief documents both.
+
+It also covers the field rules, naming conventions, how to keep a set visually
 consistent, and the wording that actually produces transparent cut-outs.
 
 Then check its work before spending generations:
 
 ```bash
-./imagegen-cli validate ~/my-images            # every file parses?
-./imagegen-cli run ~/my-images --dry-run       # right count, right paths?
-./imagegen-cli run ~/my-images --limit 3       # smoke test three images
+./imagegen-cli validate ~/batch.json           # every entry parses?
+./imagegen-cli run ~/batch.json --dry-run      # right count, right paths?
+./imagegen-cli run ~/batch.json --limit 3      # smoke test three images
 ```
 
 `validate` and `--dry-run` never open a browser and never write anything, so
@@ -262,7 +366,7 @@ they are free to run as often as you like.
 
 ---
 
-## 6. Where output goes
+## 7. Where output goes
 
 By default the output folder is `<prompt-folder>/output`. Override it with
 `-o/--out`, which is what you want when the prompt library lives in a repo and
@@ -352,7 +456,7 @@ is why a compressed file reports mode `P` rather than `RGBA`.
 
 ---
 
-## 7. Backgrounds and transparency
+## 8. Backgrounds and transparency
 
 **The prompt is the source of truth.** By default, whatever the generator returns
 is exactly what gets saved. If your prompt asks for a transparent background,
@@ -388,7 +492,7 @@ Every decision is recorded per item in `progress.json` and printed as a `note:`.
 
 ---
 
-## 8. Resuming, retrying, skipping
+## 9. Resuming, retrying, skipping
 
 - **Already-generated items are skipped.** Rerunning the same command is always
   safe and always cheap.
@@ -434,13 +538,16 @@ log. Force either way with `--color always|never`.
 
 ---
 
-## 9. Command reference
+## 10. Command reference
 
-### `run <prompt-folder>`
+### `run <source>`
+
+`<source>` is a prompt folder or a `.json` manifest, for `run`, `status` and
+`validate` alike.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `-o, --out DIR` | `<prompt-folder>/output` | where images are written |
+| `-o, --out DIR` | manifest's `output_dir`, else `<source>/output` | where images are written |
 | `--backend NAME` | `ideogram` | `ideogram` or `mock` |
 | `--limit N` | 0 (all) | stop after N successful images |
 | `--only ID` | — | generate just this id; repeatable |
@@ -448,7 +555,7 @@ log. Force either way with `--color always|never`.
 | `--retry-failed` | off | re-queue previously failed items |
 | `--redo-changed` | off | re-queue done items whose prompt was edited |
 | `--no-reconcile` | off | do not adopt images already on disk as done |
-| `--force-background-removal` | off | cut out the background when one is really there (§7) |
+| `--force-background-removal` | off | cut out the background when one is really there (§8) |
 | `--max-file-size KB` | off | compress images over this size, keeping resolution; bare flag means 1200 KB |
 | `--allow-upscale` | off | resize up to `size:` instead of keeping native resolution |
 | `--max-attempts N` | 3 | tries per image |
@@ -476,6 +583,12 @@ Parses every prompt file, prints each parse error with its filename, and shows
 the fully resolved first job so you can confirm the defaults landed where you
 expected. Read-only, no browser.
 
+### `convert <manifest.json> <folder>`
+
+Writes one Markdown prompt file per image, mirroring the output layout, plus an
+`imagegen.yaml`. `--force` overwrites files that already exist. Only needed when
+you want the prompts as editable files — `run` reads a manifest directly.
+
 ### `init <folder>`
 
 Scaffolds `imagegen.yaml` and an example prompt. Never overwrites existing files.
@@ -484,7 +597,7 @@ Scaffolds `imagegen.yaml` and an example prompt. Never overwrites existing files
 
 Prints the prompt-authoring brief ([`AUTHORING.md`](AUTHORING.md)) for pasting
 into an AI along with your idea. `--out FILE` writes it to a file, `--full`
-includes the human-facing intro. See §5.
+includes the human-facing intro. See §6.
 
 ### Examples
 
@@ -514,7 +627,7 @@ browser, unparseable prompt folder) · `130` interrupted.
 
 ---
 
-## 10. Chrome and the Ideogram session
+## 11. Chrome and the Ideogram session
 
 Images come from your signed-in web session, not a paid API key. The backend
 launches Chrome itself with `--remote-debugging-port` on a **dedicated profile**
@@ -549,7 +662,7 @@ one we just made". That failure is silent and produces plausible-looking files.
 
 ---
 
-## 11. Adding another generator
+## 12. Adding another generator
 
 `imagegen/backends/base.py` is the entire contract:
 
@@ -575,7 +688,7 @@ use it to test the pipeline without spending real generations.
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 **"this Chrome profile is not signed in to Ideogram"** — sign in inside the
 automation window, confirm the generator page loads, then rerun. Or point
@@ -597,7 +710,7 @@ composer layout. The selectors live at the top of
 `imagegen/backends/ideogram.py`.
 
 **Images come back opaque when you asked for transparency** — strengthen the
-prompt wording first (§7), then add `--force-background-removal`.
+prompt wording first (§8), then add `--force-background-removal`.
 
 **"another run holds …/run.lock"** — a run is already going against that output
 folder. If you are certain nothing is running, delete the lock file.

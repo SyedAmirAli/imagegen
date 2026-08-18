@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from . import __version__, backends, prompts, ui
+from . import __version__, backends, manifest, prompts, ui
 from .logging_utils import attach_file, log, rule
 from .progress import Progress
 from .prompts import PromptError
@@ -23,11 +23,29 @@ STATE_DIRNAME = ".imagegen"
 
 
 def _paths(args) -> SimpleNamespace:
-    prompt_dir = Path(args.prompt_dir).expanduser().resolve()
-    out_dir = Path(args.out).expanduser().resolve() if args.out else prompt_dir / "output"
+    """Resolve source and output locations.
+
+    Output directory precedence: --out, then a manifest's own `output_dir`,
+    then `<source>/output`. A manifest's path is taken relative to the manifest
+    file itself, so the JSON stays portable — moving it moves its images.
+    """
+    source = Path(args.prompt_dir).expanduser().resolve()
+    is_json = prompts.is_manifest(source)
+    base = source.parent if is_json else source
+
+    declared = manifest.output_dir_of(manifest.read(source)) if is_json else None
+    if getattr(args, "out", None):
+        out_dir = Path(args.out).expanduser().resolve()
+    elif declared:
+        out_dir = (base / Path(declared).expanduser()).resolve()
+    else:
+        out_dir = base / "output"
+
     state_dir = out_dir / STATE_DIRNAME
     return SimpleNamespace(
-        prompt_dir=prompt_dir,
+        prompt_dir=source,
+        is_manifest=is_json,
+        declared_output=declared,
         out_dir=out_dir,
         state_dir=state_dir,
         state=Path(args.state).expanduser().resolve() if getattr(args, "state", None)
@@ -65,14 +83,15 @@ def apply_config_defaults(args, parser, config: dict) -> list[str]:
 
 
 def _load(paths) -> list:
-    jobs, errors = prompts.load_folder(paths.prompt_dir, paths.out_dir)
+    jobs, errors = prompts.load_source(paths.prompt_dir, paths.out_dir)
     for path, message in errors:
         log(f"!! skipping {path.name}: {message}", err=True)
     for job in jobs:
         for warning in job.warnings:
             log(f"!  {job.rel_source}: {warning}", err=True)
     if not jobs:
-        raise SystemExit(f"no usable prompt files under {paths.prompt_dir}")
+        what = "images in" if paths.is_manifest else "prompt files under"
+        raise SystemExit(f"no usable {what} {paths.prompt_dir}")
     return jobs
 
 
@@ -97,14 +116,18 @@ def _select(jobs, args) -> list:
 
 def cmd_validate(args) -> int:
     paths = _paths(args)
-    jobs, errors = prompts.load_folder(paths.prompt_dir, paths.out_dir)
+    jobs, errors = prompts.load_source(paths.prompt_dir, paths.out_dir)
     for path, message in errors:
         print(f"ERROR  {path}: {message}")
     warned = [(j, w) for j in jobs for w in j.warnings]
     for job, warning in warned:
         print(f"WARN   {job.rel_source}: {warning}")
-    print(f"\n{len(jobs)} valid prompt(s), {len(errors)} error(s), "
-          f"{len(warned)} warning(s) under {paths.prompt_dir}")
+    kind = "manifest image(s)" if paths.is_manifest else "prompt(s)"
+    print(f"\n{len(jobs)} valid {kind}, {len(errors)} error(s), "
+          f"{len(warned)} warning(s) in {paths.prompt_dir}")
+    print(f"output → {paths.out_dir}"
+          + (f"  (from the manifest's output_dir: {paths.declared_output!r})"
+             if paths.declared_output else ""))
     if jobs:
         j = jobs[0]
         preview = j.prompt if len(j.prompt) <= 300 else j.prompt[:300] + " …"
@@ -169,7 +192,11 @@ def cmd_run(args) -> int:
         paths.state_dir.mkdir(parents=True, exist_ok=True)
         attach_file(paths.log)
 
-    config = prompts.load_config(paths.prompt_dir)
+    if paths.is_manifest:
+        data = manifest.read(paths.prompt_dir)
+        config = {"options": (data.get("options") or {}) if isinstance(data, dict) else {}}
+    else:
+        config = prompts.load_config(paths.prompt_dir)
     applied = apply_config_defaults(args, args._parser, config)
 
     jobs = _load(paths)
@@ -193,7 +220,8 @@ def cmd_run(args) -> int:
     log(ui.paint(f"imagegen {__version__}", ui.C.BOLD, ui.C.CYAN)
         + ui.paint(f"  ·  {args.backend}  ·  {paths.prompt_dir}", ui.C.GREY))
     log(ui.paint("output   ", ui.C.GREY) + str(paths.out_dir))
-    log(ui.paint("prompts  ", ui.C.GREY) + f"{len(jobs)} total"
+    log(ui.paint("prompts  ", ui.C.GREY)
+        + f"{len(jobs)} total"
         + (f", {sync['added']} new" if sync["added"] else "")
         + (f", {sync['changed']} edited" if sync["changed"] else "")
         + (f", {adopted} adopted from disk" if adopted else "")
@@ -284,6 +312,63 @@ defaults:
 """
 
 
+def cmd_convert(args) -> int:
+    """Materialise a JSON manifest as a prompt folder of Markdown files."""
+    import yaml
+
+    source = Path(args.manifest).expanduser().resolve()
+    if not prompts.is_manifest(source):
+        raise SystemExit(f"{source} is not a .json manifest")
+    target = Path(args.folder).expanduser().resolve()
+
+    # Prompt files are laid out to mirror the images they produce, so the folder
+    # reads the same way the output tree will.
+    jobs, errors = prompts.load_source(source, target / "output")
+    for label, message in errors:
+        print(f"ERROR  {label}: {message}")
+    if not jobs:
+        raise SystemExit("nothing to convert")
+
+    written = skipped = 0
+    for job in jobs:
+        dest = target / Path(job.rel_output).with_suffix(".md")
+        if dest.exists() and not args.force:
+            skipped += 1
+            continue
+        front = {"id": job.id, "output": job.rel_output}
+        if job.size:
+            front["size"] = f"{job.size[0]}x{job.size[1]}"
+        if job.aspect:
+            front["aspect"] = job.aspect
+        if job.background != "unspecified":
+            front["background"] = job.background
+        if job.negative:
+            front["negative"] = job.negative
+        # safe_dump quotes what needs quoting — notably "1:1", which is not a
+        # string to YAML unless it is quoted.
+        header = yaml.safe_dump(front, sort_keys=False, allow_unicode=True,
+                                default_flow_style=False, width=10**6)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(f"---\n{header}---\n\n{job.prompt}\n", encoding="utf-8")
+        written += 1
+
+    config = target / "imagegen.yaml"
+    if not config.exists():
+        config.write_text(
+            f"# Generated from {source.name}.\n"
+            "# Settings shared by every prompt go here; a prompt file's own\n"
+            "# front-matter always wins over these.\n"
+            "defaults: {}\n"
+            "options: {}\n"
+        )
+
+    print(f"\nwrote {written} prompt file(s) to {target}"
+          + (f", skipped {skipped} that already existed (use --force to overwrite)"
+             if skipped else ""))
+    print(f"\nNext:  imagegen validate {target}\n       imagegen run {target}")
+    return 1 if errors else 0
+
+
 AUTHORING_FILE = "AUTHORING.md"
 
 
@@ -336,7 +421,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_common(p):
-        p.add_argument("prompt_dir", help="folder containing the prompt files")
+        p.add_argument("prompt_dir", metavar="SOURCE",
+                       help="a folder of prompt files, or a .json manifest")
         p.add_argument("-o", "--out", default=None,
                        help="output folder (default: <prompt_dir>/output)")
         p.add_argument("--backend", default=backends.DEFAULT_BACKEND,
@@ -404,6 +490,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_spec.add_argument("--full", action="store_true",
                         help="include the human-facing intro as well as the brief")
     p_spec.set_defaults(func=cmd_spec)
+
+    p_convert = sub.add_parser(
+        "convert", help="turn a JSON manifest into a prompt folder",
+        description="Write one Markdown prompt file per image, laid out to mirror "
+                    "the images the manifest describes. Only needed if you want to "
+                    "hand-edit the prompts — `run` reads a manifest directly.")
+    p_convert.add_argument("manifest", help="path to the .json manifest")
+    p_convert.add_argument("folder", help="prompt folder to create")
+    p_convert.add_argument("--force", action="store_true",
+                           help="overwrite prompt files that already exist")
+    p_convert.set_defaults(func=cmd_convert)
 
     p_init = sub.add_parser("init", help="scaffold a prompt folder")
     p_init.add_argument("prompt_dir")

@@ -1,5 +1,15 @@
 # Examples
 
+The same three images are provided twice, once in each input format:
+
+- `portraits-demo/` — a prompt folder of Markdown files
+- `portraits-demo.json` — the identical batch as a single JSON manifest
+
+```bash
+./imagegen-cli run examples/portraits-demo.json     # JSON, straight in
+./imagegen-cli run examples/portraits-demo          # or the folder
+```
+
 ## `portraits-demo`
 
 A three-prompt folder that was run end to end against Ideogram, kept as a working

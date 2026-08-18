@@ -331,6 +331,20 @@ def parse_file(path: Path, root: Path, out_root: Path, defaults: dict) -> Job:
     )
 
 
+def is_manifest(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() == ".json"
+
+
+def load_source(path: Path, out_root: Path) -> tuple[list[Job], list[tuple[Path, str]]]:
+    """Load prompts from either a folder of Markdown files or a JSON manifest."""
+    from . import manifest   # imported here: manifest builds on this module
+
+    path = path.expanduser().resolve()
+    if is_manifest(path):
+        return manifest.parse(path, out_root)
+    return load_folder(path, out_root)
+
+
 def load_folder(root: Path, out_root: Path) -> tuple[list[Job], list[tuple[Path, str]]]:
     """Return (jobs, errors) for every prompt file under `root`, path-sorted."""
     root = root.resolve()
