@@ -261,6 +261,30 @@ defaults:
 """
 
 
+AUTHORING_FILE = "AUTHORING.md"
+
+
+def cmd_spec(args) -> int:
+    """Print the brief that turns an idea into a prompt folder."""
+    path = Path(__file__).resolve().parent.parent / AUTHORING_FILE
+    if not path.is_file():
+        print(f"{AUTHORING_FILE} is missing from {path.parent}", file=sys.stderr)
+        return 2
+    text = path.read_text()
+    if not args.full:
+        # Everything before the horizontal rule is instructions for the human
+        # holding the terminal; the AI only needs what comes after it.
+        _, sep, brief = text.partition("\n---\n")
+        text = brief.lstrip() if sep else text
+    if args.out:
+        out = Path(args.out).expanduser()
+        out.write_text(text)
+        print(f"wrote {out}")
+    else:
+        print(text)
+    return 0
+
+
 def cmd_init(args) -> int:
     root = Path(args.prompt_dir).expanduser().resolve()
     (root / "portraits").mkdir(parents=True, exist_ok=True)
@@ -339,6 +363,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_val = sub.add_parser("validate", help="parse every prompt file and report problems")
     add_common(p_val)
     p_val.set_defaults(func=cmd_validate)
+
+    p_spec = sub.add_parser(
+        "spec",
+        help="print the brief for turning an idea into a prompt folder",
+        description="Print a copy-paste brief that any AI can follow to convert an "
+                    "idea, discussion or design brief into a prompt folder this "
+                    "tool can run.",
+    )
+    p_spec.add_argument("--out", default=None, metavar="FILE", help="write to a file instead of stdout")
+    p_spec.add_argument("--full", action="store_true",
+                        help="include the human-facing intro as well as the brief")
+    p_spec.set_defaults(func=cmd_spec)
 
     p_init = sub.add_parser("init", help="scaffold a prompt folder")
     p_init.add_argument("prompt_dir")

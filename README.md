@@ -13,7 +13,12 @@ identical command and it continues from exactly where it stopped.
 ./imagegen-cli validate ~/my-images        # parse every prompt, report problems
 ./imagegen-cli run      ~/my-images        # generate everything still pending
 ./imagegen-cli status   ~/my-images        # how far along am I
+./imagegen-cli spec                        # brief that turns an idea into a prompt folder
 ```
+
+Have an idea or a chat discussion rather than a folder of prompts? Hand
+[`AUTHORING.md`](AUTHORING.md) to any AI and it writes the folder for you — see
+[§5](#5-from-an-idea-to-a-prompt-folder).
 
 ---
 
@@ -23,13 +28,14 @@ identical command and it continues from exactly where it stopped.
 2. [The prompt folder](#2-the-prompt-folder)
 3. [Prompt file structure](#3-prompt-file-structure)
 4. [Folder-level settings: `imagegen.yaml`](#4-folder-level-settings-imagegenyaml)
-5. [Where output goes](#5-where-output-goes)
-6. [Backgrounds and transparency](#6-backgrounds-and-transparency)
-7. [Resuming, retrying, skipping](#7-resuming-retrying-skipping)
-8. [Command reference](#8-command-reference)
-9. [Chrome and the Ideogram session](#9-chrome-and-the-ideogram-session)
-10. [Adding another generator](#10-adding-another-generator)
-11. [Troubleshooting](#11-troubleshooting)
+5. [From an idea to a prompt folder](#5-from-an-idea-to-a-prompt-folder)
+6. [Where output goes](#6-where-output-goes)
+7. [Backgrounds and transparency](#7-backgrounds-and-transparency)
+8. [Resuming, retrying, skipping](#8-resuming-retrying-skipping)
+9. [Command reference](#9-command-reference)
+10. [Chrome and the Ideogram session](#10-chrome-and-the-ideogram-session)
+11. [Adding another generator](#11-adding-another-generator)
+12. [Troubleshooting](#12-troubleshooting)
 
 ---
 
@@ -120,7 +126,7 @@ no backdrop, no ground shadow, no scenery.
 | `output` | no | Where the PNG is written, **relative to the output folder**. Defaults to the prompt's own path with a `.png` extension, which mirrors your prompt tree into the output tree. Absolute paths are rejected. |
 | `size` | no | Final pixel size, `WIDTHxHEIGHT`. Omit to keep whatever the generator produces natively. The image is only ever downscaled to this; see `--allow-upscale`. |
 | `aspect` | no | Ratio requested from the generator, e.g. `"1:1"`, `"3:4"`, `"16:9"`. Quote it — bare `16:9` is not valid YAML. Derived from `size` when omitted. A ratio the generator does not offer is snapped to the nearest one it does, and the substitution is logged. |
-| `background` | no | `transparent`, `opaque`, or omitted. This is an instruction to *you and the tool*, not to the model — put the actual wording in the prompt too. See §6. |
+| `background` | no | `transparent`, `opaque`, or omitted. This is an instruction to *you and the tool*, not to the model — put the actual wording in the prompt too. See §7. |
 | `negative` | no | Things to avoid. Ideogram's current composer has no separate negative field, so this is appended to the prompt as `NEGATIVE PROMPT (avoid entirely): …` unless that text already appears in the prompt. |
 
 Any other key you add is preserved and passed through to the backend, so a future
@@ -199,7 +205,38 @@ otherwise a `640x480` prompt would silently be generated as `1:1`.
 
 ---
 
-## 5. Where output goes
+## 5. From an idea to a prompt folder
+
+You do not have to write the format by hand. If you have an idea, a design brief,
+or a chat session where you worked out what the images should be, hand that plus
+[`AUTHORING.md`](AUTHORING.md) to any AI and let it produce the folder for you.
+
+```bash
+./imagegen-cli spec | xclip -selection clipboard   # Linux
+./imagegen-cli spec | pbcopy                       # macOS
+./imagegen-cli spec > brief.md
+```
+
+Paste it into a chat alongside your idea and it writes each file out as a code
+block for you to save. Give it to a coding assistant with access to a directory
+and it creates the folder and the files directly. The brief covers the format,
+the field rules, folder and naming conventions, how to keep a set visually
+consistent, and the wording that actually produces transparent cut-outs.
+
+Then check its work before spending generations:
+
+```bash
+./imagegen-cli validate ~/my-images            # every file parses?
+./imagegen-cli run ~/my-images --dry-run       # right count, right paths?
+./imagegen-cli run ~/my-images --limit 3       # smoke test three images
+```
+
+`validate` and `--dry-run` never open a browser and never write anything, so
+they are free to run as often as you like.
+
+---
+
+## 6. Where output goes
 
 By default the output folder is `<prompt-folder>/output`. Override it with
 `-o/--out`, which is what you want when the prompt library lives in a repo and
@@ -234,7 +271,7 @@ such as `background removed (rembg)` or `kept native 1024x1024`.
 
 ---
 
-## 6. Backgrounds and transparency
+## 7. Backgrounds and transparency
 
 **The prompt is the source of truth.** By default, whatever the generator returns
 is exactly what gets saved. If your prompt asks for a transparent background,
@@ -270,7 +307,7 @@ Every decision is recorded per item in `progress.json` and printed as a `note:`.
 
 ---
 
-## 7. Resuming, retrying, skipping
+## 8. Resuming, retrying, skipping
 
 - **Already-generated items are skipped.** Rerunning the same command is always
   safe and always cheap.
@@ -292,7 +329,7 @@ Every decision is recorded per item in `progress.json` and printed as a `note:`.
 
 ---
 
-## 8. Command reference
+## 9. Command reference
 
 ### `run <prompt-folder>`
 
@@ -306,7 +343,7 @@ Every decision is recorded per item in `progress.json` and printed as a `note:`.
 | `--retry-failed` | off | re-queue previously failed items |
 | `--redo-changed` | off | re-queue done items whose prompt was edited |
 | `--no-reconcile` | off | do not adopt images already on disk as done |
-| `--force-background-removal` | off | cut out the background when one is really there (§6) |
+| `--force-background-removal` | off | cut out the background when one is really there (§7) |
 | `--allow-upscale` | off | resize up to `size:` instead of keeping native resolution |
 | `--max-attempts N` | 3 | tries per image |
 | `--retry-backoff S` | 5.0 | seconds × attempt to wait before retrying |
@@ -336,6 +373,12 @@ expected. Read-only, no browser.
 
 Scaffolds `imagegen.yaml` and an example prompt. Never overwrites existing files.
 
+### `spec`
+
+Prints the prompt-authoring brief ([`AUTHORING.md`](AUTHORING.md)) for pasting
+into an AI along with your idea. `--out FILE` writes it to a file, `--full`
+includes the human-facing intro. See §5.
+
 ### Examples
 
 ```bash
@@ -364,7 +407,7 @@ browser, unparseable prompt folder) · `130` interrupted.
 
 ---
 
-## 9. Chrome and the Ideogram session
+## 10. Chrome and the Ideogram session
 
 Images come from your signed-in web session, not a paid API key. The backend
 launches Chrome itself with `--remote-debugging-port` on a **dedicated profile**
@@ -399,7 +442,7 @@ one we just made". That failure is silent and produces plausible-looking files.
 
 ---
 
-## 10. Adding another generator
+## 11. Adding another generator
 
 `imagegen/backends/base.py` is the entire contract:
 
@@ -425,7 +468,7 @@ use it to test the pipeline without spending real generations.
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 **"this Chrome profile is not signed in to Ideogram"** — sign in inside the
 automation window, confirm the generator page loads, then rerun. Or point
@@ -447,7 +490,7 @@ composer layout. The selectors live at the top of
 `imagegen/backends/ideogram.py`.
 
 **Images come back opaque when you asked for transparency** — strengthen the
-prompt wording first (§6), then add `--force-background-removal`.
+prompt wording first (§7), then add `--force-background-removal`.
 
 **"another run holds …/run.lock"** — a run is already going against that output
 folder. If you are certain nothing is running, delete the lock file.
