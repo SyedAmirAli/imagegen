@@ -55,8 +55,8 @@ generator.
 
 | Field | Rule |
 |---|---|
-| `id` | Unique across the whole folder. Use `<section>-<number>-<slug>`, e.g. `02-001-founder-portrait`. |
-| `output` | Path **relative to the output folder**, must end in `.png`, unique across the folder. Mirror the prompt folder structure. Never absolute. |
+| `id` | Unique across the whole folder. Use `<section>-<number>-<slug>`, all lowercase, e.g. `02-001-founder-portrait`. |
+| `output` | Path **relative to the output folder**, unique across the folder, mirroring the prompt folder structure. **Every segment must be a slug** — lowercase letters, digits and dashes only, no spaces, no capitals, no punctuation — and it must end in `.png`. Never absolute, and never containing `..`. Anything else is rejected or warned about. |
 | `size` | `WIDTHxHEIGHT`, no spaces. Omit entirely if you have no specific requirement — the generator's native resolution is usually the best one. Only ever downscales. |
 | `aspect` | **Must be quoted**: `aspect: "16:9"`. Unquoted `16:9` is not valid YAML. Use one of `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, `2:3`, `16:10`, `10:16`, `1:3`, `3:1`. Omit it when `size` is given — it is derived. |
 | `background` | `transparent` or `opaque`. Omit when it does not matter. This is metadata, **not** an instruction to the model — you must also say it in the prompt text. |
@@ -72,6 +72,9 @@ front-matter.
   `02-portraits/`, `03-icons/`.
 - Number files so they sort in the order they should be generated:
   `001-symbol.md`, `002-wordmark.md`. Path order is generation order.
+- **Name the prompt files as slugs too** — lowercase, dashes, no spaces: use
+  `001-founder-portrait.md`, never `001 Founder Portrait.md`. Filenames become
+  ids and output paths, and both get typed into shell commands.
 - `README.md`, `INDEX.md`, `AGENTS.md`, `CLAUDE.md` and any file starting with `.`
   or `_` are ignored, so notes can live alongside prompts safely.
 - Put anything shared by every image in `imagegen.yaml` at the folder root instead
@@ -118,6 +121,8 @@ defaults:
 ## Before you finish
 
 - Every `id` unique, every `output` unique.
+- Every filename, `id` and `output` path is lowercase-dash-slug, and every
+  `output` ends in `.png`.
 - Every `aspect` quoted.
 - Front-matter opens and closes with `---` on their own lines.
 - Every prompt reads as a complete standalone description.

@@ -68,6 +68,9 @@ def _load(paths) -> list:
     jobs, errors = prompts.load_folder(paths.prompt_dir, paths.out_dir)
     for path, message in errors:
         log(f"!! skipping {path.name}: {message}", err=True)
+    for job in jobs:
+        for warning in job.warnings:
+            log(f"!  {job.rel_source}: {warning}", err=True)
     if not jobs:
         raise SystemExit(f"no usable prompt files under {paths.prompt_dir}")
     return jobs
@@ -97,7 +100,11 @@ def cmd_validate(args) -> int:
     jobs, errors = prompts.load_folder(paths.prompt_dir, paths.out_dir)
     for path, message in errors:
         print(f"ERROR  {path}: {message}")
-    print(f"\n{len(jobs)} valid prompt(s), {len(errors)} error(s) under {paths.prompt_dir}")
+    warned = [(j, w) for j in jobs for w in j.warnings]
+    for job, warning in warned:
+        print(f"WARN   {job.rel_source}: {warning}")
+    print(f"\n{len(jobs)} valid prompt(s), {len(errors)} error(s), "
+          f"{len(warned)} warning(s) under {paths.prompt_dir}")
     if jobs:
         j = jobs[0]
         preview = j.prompt if len(j.prompt) <= 300 else j.prompt[:300] + " …"

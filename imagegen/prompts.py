@@ -26,7 +26,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -67,6 +67,7 @@ class Job:
     aspect: str | None = None
     background: str = "unspecified"
     extra: dict = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def wants_transparency(self) -> bool:
@@ -102,6 +103,64 @@ def derive_aspect(size: tuple[int, int]) -> str:
     w, h = size
     g = math.gcd(w, h) or 1
     return f"{w // g}:{h // g}"
+
+
+SLUG_OK_RE = re.compile(r"^[a-z0-9]+(?:[-.][a-z0-9]+)*$")
+UNSAFE_RE = re.compile(r"[^a-z0-9.-]+")
+
+
+def slugify(text: str) -> str:
+    """Lowercase, dash-separated, filesystem- and URL-safe."""
+    slug = UNSAFE_RE.sub("-", text.strip().lower())
+    slug = re.sub(r"-{2,}", "-", slug).strip("-.")
+    return slug or "untitled"
+
+
+def slug_output_path(rel_path: Path) -> str:
+    """Sluggify every component of an auto-derived output path.
+
+    Applied only when a prompt file does not name its own `output:` — a prompt
+    called `My Logo #2 (final).md` should not become an image whose filename
+    needs quoting in every shell command that touches it.
+    """
+    parts = [slugify(part) for part in rel_path.parent.parts if part not in (".", "")]
+    return "/".join(parts + [f"{slugify(rel_path.stem)}.png"])
+
+
+def check_output_path(rel_output: str) -> list[str]:
+    """Validate an author-supplied `output:`. Returns warnings; raises on unsafe.
+
+    Traversal is rejected rather than normalised: an `output:` of `../x.png`
+    writes outside the output folder, which silently scatters images across the
+    filesystem and puts them where a resume will never find them again.
+    """
+    if Path(rel_output).is_absolute() or rel_output.startswith("~"):
+        raise PromptError(f"output must be a relative path, got {rel_output!r}")
+    parts = PurePosixPath(rel_output).parts
+    if ".." in parts:
+        raise PromptError(
+            f"output must stay inside the output folder, got {rel_output!r}"
+        )
+    if not parts or rel_output.endswith("/"):
+        raise PromptError(f"output is not a file path: {rel_output!r}")
+
+    suffix = PurePosixPath(rel_output).suffix.lower()
+    if suffix and suffix != ".png":
+        raise PromptError(
+            f"output must be a .png file (every image is written as PNG), got {rel_output!r}"
+        )
+
+    warnings = []
+    name = PurePosixPath(rel_output).name
+    stem = name[: -len(suffix)] if suffix else name
+    for part in (*parts[:-1], stem):
+        if not SLUG_OK_RE.match(part):
+            warnings.append(
+                f"output {rel_output!r} is not a clean slug "
+                "(use lowercase letters, digits and dashes)"
+            )
+            break
+    return warnings
 
 
 def normalise_background(value) -> str:
@@ -228,11 +287,14 @@ def parse_file(path: Path, root: Path, out_root: Path, defaults: dict) -> Job:
 
     job_id = str(merged.get("id") or path.relative_to(root).with_suffix("").as_posix())
 
-    rel_output = str(merged.get("output") or "").strip()
-    if not rel_output:
-        rel_output = path.relative_to(root).with_suffix(".png").as_posix()
-    if Path(rel_output).is_absolute():
-        raise PromptError(f"output must be a relative path, got {rel_output!r}")
+    warnings: list[str] = []
+    rel_output = str(merged.get("output") or "").strip().replace("\\", "/")
+    if rel_output:
+        if not PurePosixPath(rel_output).suffix:
+            rel_output += ".png"        # `01-logo/symbol` is an obvious intent
+        warnings += check_output_path(rel_output)
+    else:
+        rel_output = slug_output_path(path.relative_to(root))
 
     size = parse_size(merged.get("size"))
     # A file that states its own size but no aspect derives the aspect from that
@@ -265,6 +327,7 @@ def parse_file(path: Path, root: Path, out_root: Path, defaults: dict) -> Job:
         aspect=aspect,
         background=normalise_background(merged.get("background")),
         extra={k: v for k, v in merged.items() if k not in known},
+        warnings=warnings,
     )
 
 

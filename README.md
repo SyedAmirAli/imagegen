@@ -122,8 +122,8 @@ no backdrop, no ground shadow, no scenery.
 
 | Field | Required | Meaning |
 |---|---|---|
-| `id` | no | Stable identifier used for progress tracking and `--only`. **Defaults to the file's path without its extension** (`02-portraits/001-founder`). Must be unique in the folder. |
-| `output` | no | Where the PNG is written, **relative to the output folder**. Defaults to the prompt's own path with a `.png` extension, which mirrors your prompt tree into the output tree. Absolute paths are rejected. |
+| `id` | no | Stable identifier used for progress tracking and `--only`. **Defaults to the file's path without its extension** (`02-portraits/001-founder`). Must be unique in the folder. Keep it a slug — it also names the debug screenshots. |
+| `output` | no | Where the PNG is written, **relative to the output folder**. Defaults to a slugified version of the prompt's own path, which mirrors your prompt tree into the output tree. Must end in `.png` — see [file naming](#file-naming). |
 | `size` | no | Final pixel size, `WIDTHxHEIGHT`. Omit to keep whatever the generator produces natively. The image is only ever downscaled to this; see `--allow-upscale`. |
 | `aspect` | no | Ratio requested from the generator, e.g. `"1:1"`, `"3:4"`, `"16:9"`. Quote it — bare `16:9` is not valid YAML. Derived from `size` when omitted. A ratio the generator does not offer is snapped to the nearest one it does, and the substitution is logged. |
 | `background` | no | `transparent`, `opaque`, or omitted. This is an instruction to *you and the tool*, not to the model — put the actual wording in the prompt too. See §7. |
@@ -153,6 +153,31 @@ transparent background.
 
 That is what lets a prompt file double as documentation without leaking headings,
 checklists and commentary into the generator.
+
+### File naming
+
+Output paths are filenames you will type, glob and script against, so they are
+held to a slug convention: **lowercase letters, digits and dashes**, one segment
+per folder level, ending in `.png`.
+
+When you leave `output:` out, the path is derived from the prompt file and
+slugified automatically — `02-portraits/My Logo #2 (final).md` becomes
+`02-portraits/my-logo-2-final.png`. Name your prompt files cleanly and you never
+have to think about it.
+
+When you do set `output:` yourself it is taken as written, but checked:
+
+| You write | Result |
+|---|---|
+| `02-portraits/founder.png` | accepted |
+| `02-portraits/founder` | accepted, `.png` appended |
+| `Section One/My Icon.png` | accepted with a **warning** — your path, your call, but it is awkward to type |
+| `founder.jpg` | **rejected** — every image is written as PNG, so any other extension is a lie about the file |
+| `../../elsewhere.png` | **rejected** — escaping the output folder scatters images where a resume can never find them again |
+| `/home/me/founder.png` | **rejected** — absolute paths ignore `--out` |
+
+Two prompts sharing one `output` path are rejected as well; without that check
+the second image silently overwrites the first and the run still reports success.
 
 ### Legacy files without front-matter
 
