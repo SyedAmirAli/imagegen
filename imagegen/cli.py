@@ -45,6 +45,7 @@ def _paths(args) -> SimpleNamespace:
     return SimpleNamespace(
         prompt_dir=source,
         is_manifest=is_json,
+        flat=bool(getattr(args, "flat", False)),
         declared_output=declared,
         out_dir=out_dir,
         state_dir=state_dir,
@@ -84,6 +85,8 @@ def apply_config_defaults(args, parser, config: dict) -> list[str]:
 
 def _load(paths) -> list:
     jobs, errors = prompts.load_source(paths.prompt_dir, paths.out_dir)
+    if paths.flat:
+        prompts.flatten_outputs(jobs, paths.out_dir)
     for path, message in errors:
         log(f"!! skipping {path.name}: {message}", err=True)
     for job in jobs:
@@ -117,6 +120,8 @@ def _select(jobs, args) -> list:
 def cmd_validate(args) -> int:
     paths = _paths(args)
     jobs, errors = prompts.load_source(paths.prompt_dir, paths.out_dir)
+    if paths.flat:
+        prompts.flatten_outputs(jobs, paths.out_dir)
     for path, message in errors:
         print(f"ERROR  {path}: {message}")
     warned = [(j, w) for j in jobs for w in j.warnings]
@@ -127,7 +132,8 @@ def cmd_validate(args) -> int:
           f"{len(warned)} warning(s) in {paths.prompt_dir}")
     print(f"output → {paths.out_dir}"
           + (f"  (from the manifest's output_dir: {paths.declared_output!r})"
-             if paths.declared_output else ""))
+             if paths.declared_output else "")
+          + ("  [flat: no subfolders]" if paths.flat else ""))
     if jobs:
         j = jobs[0]
         preview = j.prompt if len(j.prompt) <= 300 else j.prompt[:300] + " …"
@@ -198,6 +204,7 @@ def cmd_run(args) -> int:
     else:
         config = prompts.load_config(paths.prompt_dir)
     applied = apply_config_defaults(args, args._parser, config)
+    paths.flat = bool(args.flat)   # imagegen.yaml may have just switched it on
 
     jobs = _load(paths)
     progress = Progress(paths.state, paths.prompt_dir.name, args.backend)
@@ -219,7 +226,8 @@ def cmd_run(args) -> int:
     rule("━")
     log(ui.paint(f"imagegen {__version__}", ui.C.BOLD, ui.C.CYAN)
         + ui.paint(f"  ·  {args.backend}  ·  {paths.prompt_dir}", ui.C.GREY))
-    log(ui.paint("output   ", ui.C.GREY) + str(paths.out_dir))
+    log(ui.paint("output   ", ui.C.GREY) + str(paths.out_dir)
+        + (ui.paint("  (flat — no subfolders)", ui.C.GREY) if paths.flat else ""))
     log(ui.paint("prompts  ", ui.C.GREY)
         + f"{len(jobs)} total"
         + (f", {sync['added']} new" if sync["added"] else "")
@@ -430,6 +438,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help=f"generator backend (default: {backends.DEFAULT_BACKEND})")
         p.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                        help="colour and live progress display (default: auto-detect)")
+        p.add_argument("--flat", action="store_true",
+                       help="write every image directly into the output folder "
+                            "instead of category subfolders")
 
     p_run = sub.add_parser("run", help="generate everything still pending")
     add_common(p_run)

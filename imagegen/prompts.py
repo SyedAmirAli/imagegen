@@ -389,3 +389,43 @@ def load_folder(root: Path, out_root: Path) -> tuple[list[Job], list[tuple[Path,
         seen_out[job.rel_output] = path
         jobs.append(job)
     return jobs, errors
+
+
+def flatten_outputs(jobs: list[Job], out_root: Path) -> list[Job]:
+    """Rewrite every job to write straight into `out_root`, no subfolders.
+
+    Category folders are the default because they keep a few hundred images
+    browsable, but some consumers (an asset loader that globs one directory, a
+    sprite packer) want the whole batch flat.
+
+    Names collide once the folders are gone — `icons/star.png` and
+    `badges/star.png` are both `star.png`. When that happens *every* member of
+    the colliding set falls back to its full path joined with dashes
+    (`icons-star.png`, `badges-star.png`), so a name never depends on which
+    prompt happened to be read first: adding a new prompt cannot silently move
+    an image that already exists on disk.
+    """
+    out_root = out_root.resolve()
+    counts: dict[str, int] = {}
+    for job in jobs:
+        name = PurePosixPath(job.rel_output).name
+        counts[name] = counts.get(name, 0) + 1
+
+    taken: dict[str, Job] = {}
+    for job in jobs:
+        rel = PurePosixPath(job.rel_output)
+        name = rel.name
+        if counts[name] > 1:
+            joined = "-".join(part for part in (*rel.parent.parts, rel.stem)
+                              if part not in (".", ""))
+            name = f"{slugify(joined)}.png"
+        if name in taken:           # two different paths slugified alike
+            stem = name[: -len(".png")]
+            n = 2
+            while f"{stem}-{n}.png" in taken:
+                n += 1
+            name = f"{stem}-{n}.png"
+        taken[name] = job
+        job.rel_output = name
+        job.output = (out_root / name).resolve()
+    return jobs

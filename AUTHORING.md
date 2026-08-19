@@ -68,7 +68,7 @@ If you cannot, output it as a single fenced ```json block I can save.
 | `images` | **Required.** The array of image entries. |
 | `output_dir` | **Include it.** Where the images are written, relative to the JSON file itself. Use a short slug naming the batch, e.g. `"premium-humans"`. |
 | `defaults` | Anything shared by every image: `size`, `aspect`, `background`, `negative`, `prompt_prefix`, `prompt_suffix`. Put shared style wording in `prompt_prefix` rather than repeating it in every entry. |
-| `options` | Optional default flags, e.g. `{"max_file_size": 1200}` to keep files under 1200 KB. |
+| `options` | Optional default flags, e.g. `{"max_file_size": 1200}` to keep files under 1200 KB, or `{"flat": true}` to write every image directly into `output_dir` with no subfolders. |
 | `project` | Optional label. Anything else you add is ignored, not an error. |
 
 ### Per-image keys

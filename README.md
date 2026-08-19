@@ -290,7 +290,7 @@ Markdown files in a directory tree.
 | `images` | **Required.** The list of images. `assets`, `items`, `prompts` and `entries` are accepted as aliases, and a bare top-level array works too. |
 | `output_dir` | Where images are written, **relative to the JSON file itself** so the manifest stays portable. Absolute paths are allowed. Defaults to `<json-file-folder>/output`, and `--out` overrides it. |
 | `defaults` | Applied to every image, same fields as a folder's `imagegen.yaml` `defaults:` — `size`, `aspect`, `background`, `negative`, `prompt_prefix`, `prompt_suffix`. Unknown keys are ignored, so manifests carrying metadata for other tools load fine. |
-| `options` | Default CLI flags for this batch, e.g. `{"max_file_size": 1200}`. Flags you type still win. |
+| `options` | Default CLI flags for this batch, e.g. `{"max_file_size": 1200, "flat": true}`. Flags you type still win. |
 | anything else | Ignored. `project`, `generated_at`, `sections` and friends are yours to keep. |
 
 ### Per-image keys
@@ -390,6 +390,39 @@ output/
     ├── run.lock                ← present only while a run is in progress
     └── debug/                  ← screenshots of failed attempts, named <id>_a<N>.png
 ```
+
+### One flat folder instead of categories
+
+The subfolders exist because a few hundred images are easier to browse that way,
+but some consumers want the opposite — an asset loader that globs a single
+directory, a sprite packer, a bulk upload form. `--flat` writes every image
+straight into the output folder:
+
+```bash
+./imagegen-cli run ~/my-images --flat
+```
+
+```
+output/
+├── 001-symbol.png
+├── founder.png
+└── .imagegen/
+```
+
+Only the filename is kept, so names that were unique thanks to their folders can
+now collide — `icons/star.png` and `badges/star.png` are both `star.png`. When
+that happens, *every* member of the colliding set is renamed to its full path
+joined with dashes (`icons-star.png`, `badges-star.png`); the ones that do not
+collide keep their plain filename. The rule does not depend on read order, so
+adding a new prompt never renames an image already on disk.
+
+`--flat` also applies to `status` and `validate`, and can be set once per batch
+as `flat: true` under `options:` in `imagegen.yaml` or a manifest.
+
+> Flat and nested layouts do not share state. If you switch `--flat` on for a
+> batch you already generated, point `-o` at a fresh output folder — otherwise
+> the run finds none of the old files under their new names and regenerates
+> everything.
 
 Images are written to a `.part` file and moved into place only once complete, so
 an interrupted download can never leave a truncated PNG that a later run would
@@ -555,6 +588,7 @@ log. Force either way with `--color always|never`.
 | `--retry-failed` | off | re-queue previously failed items |
 | `--redo-changed` | off | re-queue done items whose prompt was edited |
 | `--no-reconcile` | off | do not adopt images already on disk as done |
+| `--flat` | off | write every image directly into the output folder, no category subfolders (§7) |
 | `--force-background-removal` | off | cut out the background when one is really there (§8) |
 | `--max-file-size KB` | off | compress images over this size, keeping resolution; bare flag means 1200 KB |
 | `--allow-upscale` | off | resize up to `size:` instead of keeping native resolution |
