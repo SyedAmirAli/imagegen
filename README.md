@@ -315,6 +315,41 @@ Output paths get the same safety checks as everywhere else: relative, inside the
 output directory, `.png`, and unique. A bad entry is reported with its position
 (`batch.json[7]: no prompt text`) and the rest of the batch still runs.
 
+### Several manifests, one batch
+
+A chat session that plans 700 images usually hands them over in chunks — one
+file per hundred. Pass them all at once; they run as a single batch, in the
+order given:
+
+```bash
+./imagegen-cli run ~/batches/from-*.json
+./imagegen-cli status ~/batches/from-*.json
+```
+
+```
+imagegen 1.0.0  ·  ideogram  ·  /home/me/batches  (7 sources)
+source   from-1-100.json
+…
+prompts  700 total, 700 new
+```
+
+The rules:
+
+- **One output folder.** Every manifest must declare the same `output_dir`, or
+  you pass `-o/--out` and it wins. Mixed folders are refused rather than guessed
+  at, and a prompt folder cannot be combined with a manifest that names its own
+  output — half a batch landing somewhere else is worse than an error.
+- **One progress file**, in that shared output folder, so a resume covers the
+  whole batch. Interrupt at image 430 of 700 and the next run picks up there.
+- **Ids and output paths must be unique across all the files.** A second file
+  reusing an id or a filename has that entry reported and skipped; the rest of
+  the file still runs.
+- **`defaults` stay per-file** — each manifest's `prompt_suffix`, `size` and so
+  on apply only to its own images, so chunks written at different times keep
+  their own wording. Only `options` merge, last file wins.
+- `--flat` applies across the whole batch, so a name shared by two manifests is
+  renamed apart the same way it would be within one.
+
 ### Converting to a prompt folder
 
 If you would rather hand-edit the prompts as Markdown, or keep them in version
@@ -576,7 +611,12 @@ log. Force either way with `--color always|never`.
 ### `run <source>`
 
 `<source>` is a prompt folder or a `.json` manifest, for `run`, `status` and
-`validate` alike.
+`validate` alike. Several manifests can be listed at once and run as one batch
+(see [§5](#several-manifests-one-batch)):
+
+```bash
+./imagegen-cli run ~/batches/from-1-100.json ~/batches/from-101-200.json
+```
 
 | Flag | Default | Purpose |
 |---|---|---|

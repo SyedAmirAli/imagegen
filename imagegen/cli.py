@@ -23,30 +23,65 @@ STATE_DIRNAME = ".imagegen"
 
 
 def _paths(args) -> SimpleNamespace:
-    """Resolve source and output locations.
+    """Resolve sources and output locations.
 
-    Output directory precedence: --out, then a manifest's own `output_dir`,
-    then `<source>/output`. A manifest's path is taken relative to the manifest
-    file itself, so the JSON stays portable — moving it moves its images.
+    Several sources may be given at once — seven manifests that between them
+    describe one batch of 700 images are a single run, not seven. They are
+    loaded in the order typed and share one output folder and one progress file.
+
+    Output directory precedence: --out, then the manifests' own `output_dir`
+    (which every manifest must agree on), then `<source>/output` for a single
+    source. A manifest's path is taken relative to the manifest file itself, so
+    the JSON stays portable — moving it moves its images.
     """
-    source = Path(args.prompt_dir).expanduser().resolve()
-    is_json = prompts.is_manifest(source)
-    base = source.parent if is_json else source
+    raw = args.sources if isinstance(args.sources, list) else [args.sources]
+    sources = []
+    for item in raw:
+        path = Path(item).expanduser().resolve()
+        if not path.exists():
+            raise SystemExit(f"no such source: {path}")
+        if path in sources:
+            raise SystemExit(f"source given twice: {path}")
+        sources.append(path)
 
-    declared = manifest.output_dir_of(manifest.read(source)) if is_json else None
+    declared = []       # (source, absolute output dir it asked for)
+    for source in sources:
+        if not prompts.is_manifest(source):
+            continue
+        asked = manifest.output_dir_of(manifest.read(source))
+        if asked:
+            declared.append((source, (source.parent / Path(asked).expanduser()).resolve()))
+
     if getattr(args, "out", None):
         out_dir = Path(args.out).expanduser().resolve()
-    elif declared:
-        out_dir = (base / Path(declared).expanduser()).resolve()
+        declared_output = None
+    elif len(declared) == len(sources) and len({d for _, d in declared}) == 1:
+        out_dir = declared[0][1]
+        declared_output = manifest.output_dir_of(manifest.read(sources[0]))
+    elif len(sources) == 1:
+        source = sources[0]
+        out_dir = (source.parent if prompts.is_manifest(source) else source) / "output"
+        declared_output = None
     else:
-        out_dir = base / "output"
+        # Silently picking one source's folder would scatter half the batch.
+        asked = dict(declared)
+        detail = "\n".join(
+            f"  {s.name} → {asked[s]}" if s in asked
+            else f"  {s.name} → (no output_dir; a prompt folder defaults to its own)"
+            for s in sources
+        )
+        raise SystemExit(
+            "these sources do not agree on one output folder, so pass -o/--out:\n"
+            + detail
+        )
 
     state_dir = out_dir / STATE_DIRNAME
     return SimpleNamespace(
-        prompt_dir=source,
-        is_manifest=is_json,
+        sources=sources,
+        label=_label(sources),
+        is_manifest=all(prompts.is_manifest(s) for s in sources),
         flat=bool(getattr(args, "flat", False)),
-        declared_output=declared,
+        declared_output=declared_output,
         out_dir=out_dir,
         state_dir=state_dir,
         state=Path(args.state).expanduser().resolve() if getattr(args, "state", None)
@@ -55,6 +90,18 @@ def _paths(args) -> SimpleNamespace:
         lock=state_dir / "run.lock",
         debug=state_dir / "debug",
     )
+
+
+def _label(sources: list[Path]) -> str:
+    """A short name for the batch, used in the state file and status output."""
+    if len(sources) == 1:
+        return sources[0].name
+    import os
+    try:
+        common = Path(os.path.commonpath([str(s) for s in sources]))
+    except ValueError:
+        common = sources[0].parent
+    return f"{common.name or 'batch'} ({len(sources)} sources)"
 
 
 def apply_config_defaults(args, parser, config: dict) -> list[str]:
@@ -84,9 +131,7 @@ def apply_config_defaults(args, parser, config: dict) -> list[str]:
 
 
 def _load(paths) -> list:
-    jobs, errors = prompts.load_source(paths.prompt_dir, paths.out_dir)
-    if paths.flat:
-        prompts.flatten_outputs(jobs, paths.out_dir)
+    jobs, errors = _load_all(paths)
     for path, message in errors:
         log(f"!! skipping {path.name}: {message}", err=True)
     for job in jobs:
@@ -94,8 +139,42 @@ def _load(paths) -> list:
             log(f"!  {job.rel_source}: {warning}", err=True)
     if not jobs:
         what = "images in" if paths.is_manifest else "prompt files under"
-        raise SystemExit(f"no usable {what} {paths.prompt_dir}")
+        raise SystemExit(f"no usable {what} "
+                         + ", ".join(str(s) for s in paths.sources))
     return jobs
+
+
+def _load_all(paths) -> tuple[list, list]:
+    """Load every source into one job list, rejecting cross-source clashes.
+
+    Two sources claiming the same id or the same output file would race each
+    other into the same progress entry and the same PNG, so the second one is
+    reported and dropped rather than half-overwriting the first.
+    """
+    jobs, errors = [], []
+    seen_ids: dict[str, Path] = {}
+    seen_out: dict[str, Path] = {}
+    for source in paths.sources:
+        loaded, source_errors = prompts.load_source(source, paths.out_dir)
+        errors.extend(source_errors)
+        for job in loaded:
+            clash = seen_ids.get(job.id)
+            if clash is not None and clash != source:
+                errors.append((source, f"duplicate id {job.id!r} (also in {clash.name})"))
+                continue
+            clash = seen_out.get(job.rel_output)
+            if clash is not None and clash != source:
+                errors.append((source, f"duplicate output {job.rel_output!r} "
+                                       f"(also from {clash.name})"))
+                continue
+            seen_ids[job.id] = source
+            seen_out[job.rel_output] = source
+            jobs.append(job)
+    if paths.flat:
+        # flattened once, over the whole batch: `a.json`'s icons/star.png and
+        # `b.json`'s badges/star.png must see each other to be renamed apart
+        prompts.flatten_outputs(jobs, paths.out_dir)
+    return jobs, errors
 
 
 def _select(jobs, args) -> list:
@@ -113,15 +192,39 @@ def _select(jobs, args) -> list:
     return jobs
 
 
+def _sources_line(paths) -> str:
+    if len(paths.sources) == 1:
+        return str(paths.sources[0])
+    return f"{paths.sources[0].parent}  ({len(paths.sources)} sources)"
+
+
+def _merged_options(paths) -> dict:
+    """Collect `options:` from every source; the last source to set a key wins.
+
+    Only `options` merges. `defaults` stay per-source, because each manifest's
+    defaults belong to its own prompts — one file's prompt_suffix must not leak
+    into another's images.
+    """
+    options: dict = {}
+    for source in paths.sources:
+        if prompts.is_manifest(source):
+            data = manifest.read(source)
+            found = (data.get("options") or {}) if isinstance(data, dict) else {}
+        else:
+            found = prompts.load_config(source).get("options") or {}
+        if not isinstance(found, dict):
+            raise SystemExit(f"`options` in {source.name} must be a mapping")
+        options.update(found)
+    return {"options": options}
+
+
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
 
 def cmd_validate(args) -> int:
     paths = _paths(args)
-    jobs, errors = prompts.load_source(paths.prompt_dir, paths.out_dir)
-    if paths.flat:
-        prompts.flatten_outputs(jobs, paths.out_dir)
+    jobs, errors = _load_all(paths)
     for path, message in errors:
         print(f"ERROR  {path}: {message}")
     warned = [(j, w) for j in jobs for w in j.warnings]
@@ -129,7 +232,15 @@ def cmd_validate(args) -> int:
         print(f"WARN   {job.rel_source}: {warning}")
     kind = "manifest image(s)" if paths.is_manifest else "prompt(s)"
     print(f"\n{len(jobs)} valid {kind}, {len(errors)} error(s), "
-          f"{len(warned)} warning(s) in {paths.prompt_dir}")
+          f"{len(warned)} warning(s)")
+    if len(paths.sources) == 1:
+        print(f"source  {paths.sources[0]}")
+    else:
+        from collections import Counter
+        per = Counter(job.source for job in jobs)
+        print(f"sources ({len(paths.sources)}):")
+        for source in paths.sources:
+            print(f"  {per.get(source, 0):>5}  {source}")
     print(f"output → {paths.out_dir}"
           + (f"  (from the manifest's output_dir: {paths.declared_output!r})"
              if paths.declared_output else "")
@@ -157,7 +268,7 @@ def cmd_status(args) -> int:
         print(f"no run state yet at {paths.state}")
         return 0
     jobs = _load(paths)
-    progress = Progress(paths.state, paths.prompt_dir.name, args.backend)
+    progress = Progress(paths.state, paths.label, args.backend)
     progress.sync(jobs)
     progress.reconcile(jobs)   # counts below must reflect what is really there
     counts = {"pending": 0, "done": 0, "failed": 0, "skipped": 0}
@@ -166,7 +277,7 @@ def cmd_status(args) -> int:
     total = sum(counts.values())
     done = counts["done"]
     pct = (done / total * 100) if total else 0
-    print(f"{paths.prompt_dir.name}: {done}/{total} done ({pct:.1f}%)  "
+    print(f"{paths.label}: {done}/{total} done ({pct:.1f}%)  "
           f"pending {counts['pending']}  failed {counts['failed']}  skipped {counts['skipped']}")
     print(f"state   {paths.state}")
     print(f"output  {paths.out_dir}")
@@ -198,16 +309,12 @@ def cmd_run(args) -> int:
         paths.state_dir.mkdir(parents=True, exist_ok=True)
         attach_file(paths.log)
 
-    if paths.is_manifest:
-        data = manifest.read(paths.prompt_dir)
-        config = {"options": (data.get("options") or {}) if isinstance(data, dict) else {}}
-    else:
-        config = prompts.load_config(paths.prompt_dir)
+    config = _merged_options(paths)
     applied = apply_config_defaults(args, args._parser, config)
     paths.flat = bool(args.flat)   # imagegen.yaml may have just switched it on
 
     jobs = _load(paths)
-    progress = Progress(paths.state, paths.prompt_dir.name, args.backend)
+    progress = Progress(paths.state, paths.label, args.backend)
     sync = progress.sync(jobs)
     adopted, requeued = progress.reconcile(jobs) if not args.no_reconcile else (0, 0)
 
@@ -225,7 +332,10 @@ def cmd_run(args) -> int:
 
     rule("━")
     log(ui.paint(f"imagegen {__version__}", ui.C.BOLD, ui.C.CYAN)
-        + ui.paint(f"  ·  {args.backend}  ·  {paths.prompt_dir}", ui.C.GREY))
+        + ui.paint(f"  ·  {args.backend}  ·  {_sources_line(paths)}", ui.C.GREY))
+    if len(paths.sources) > 1:
+        for source in paths.sources:
+            log(ui.paint("source   ", ui.C.GREY) + source.name)
     log(ui.paint("output   ", ui.C.GREY) + str(paths.out_dir)
         + (ui.paint("  (flat — no subfolders)", ui.C.GREY) if paths.flat else ""))
     log(ui.paint("prompts  ", ui.C.GREY)
@@ -239,7 +349,7 @@ def cmd_run(args) -> int:
     log(ui.paint("queue    ", ui.C.GREY) + ui.paint(f"{len(queue)}", ui.C.BOLD)
         + ui.paint(f" to generate · already done {done_now}/{len(jobs)}", ui.C.GREY))
     if applied:
-        log(f"config   defaults from imagegen.yaml: {', '.join(applied)}")
+        log(f"config   option defaults from the source(s): {', '.join(applied)}")
     if args.max_file_size is not None and args.max_file_size <= 0:
         raise SystemExit("--max-file-size must be a positive number of KB")
     if args.max_file_size:
@@ -429,10 +539,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_common(p):
-        p.add_argument("prompt_dir", metavar="SOURCE",
-                       help="a folder of prompt files, or a .json manifest")
+        p.add_argument("sources", metavar="SOURCE", nargs="+",
+                       help="a folder of prompt files, or one or more .json "
+                            "manifests to run as a single batch")
         p.add_argument("-o", "--out", default=None,
-                       help="output folder (default: <prompt_dir>/output)")
+                       help="output folder (default: <source>/output)")
         p.add_argument("--backend", default=backends.DEFAULT_BACKEND,
                        choices=sorted(backends.BACKENDS),
                        help=f"generator backend (default: {backends.DEFAULT_BACKEND})")

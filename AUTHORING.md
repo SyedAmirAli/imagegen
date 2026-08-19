@@ -85,6 +85,19 @@ If you cannot, output it as a single fenced ```json block I can save.
 
 Order the `images` array in the order they should be generated.
 
+### If the batch is too large for one reply
+
+Split it into numbered files — `from-1-100.json`, `from-101-200.json` and so on
+— each a complete, valid manifest with the **same `output_dir`**. They are run
+together as one batch:
+
+```bash
+imagegen-cli run ./from-*.json
+```
+
+Ids and `output` paths must be unique across *all* the files, not just within
+one. `defaults` are per-file, so each chunk carries its own shared wording.
+
 ## Writing the prompt text
 
 - **Self-contained.** Each prompt must stand alone. The generator sees only that
