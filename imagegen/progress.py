@@ -42,7 +42,7 @@ class Progress:
 
     def _load(self) -> None:
         try:
-            loaded = json.loads(self.path.read_text())
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
             backup = self.path.with_suffix(".corrupt.json")
             self.path.replace(backup)
@@ -68,8 +68,9 @@ class Progress:
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self.data, indent=2, sort_keys=False))
-        os.replace(tmp, self.path)   # atomic on POSIX
+        tmp.write_text(json.dumps(self.data, indent=2, sort_keys=False),
+                       encoding="utf-8")
+        os.replace(tmp, self.path)   # atomic on POSIX and on Windows (same volume)
 
     # -- item bookkeeping --------------------------------------------------
 

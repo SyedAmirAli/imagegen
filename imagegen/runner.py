@@ -46,7 +46,7 @@ class RunLock:
         try:
             self._fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            owner = self.path.read_text().strip() if self.path.is_file() else "?"
+            owner = self.path.read_text(encoding="utf-8").strip() if self.path.is_file() else "?"
             pid = owner.split()[0] if owner else ""
             if pid.isdigit() and not _pid_alive(int(pid)):
                 log(f"   clearing stale lock from pid {pid}")
@@ -68,6 +68,34 @@ class RunLock:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Is that pid still running? Asking must never disturb it.
+
+    `os.kill(pid, 0)` is the POSIX idiom, but on Windows os.kill does not probe:
+    every signal except CTRL_C_EVENT/CTRL_BREAK_EVENT goes straight to
+    TerminateProcess, so the liveness check would kill the very run it asks
+    about. Windows gets an OpenProcess handle instead, which only observes.
+    """
+    if os.name == "nt":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        ERROR_ACCESS_DENIED = 5
+        STILL_ACTIVE = 259
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            # Denied means it exists and belongs to somebody else; treat the
+            # lock as held rather than stealing it.
+            return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

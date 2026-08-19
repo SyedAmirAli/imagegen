@@ -477,7 +477,8 @@ def cmd_convert(args) -> int:
             "# Settings shared by every prompt go here; a prompt file's own\n"
             "# front-matter always wins over these.\n"
             "defaults: {}\n"
-            "options: {}\n"
+            "options: {}\n",
+            encoding="utf-8",
         )
 
     print(f"\nwrote {written} prompt file(s) to {target}"
@@ -492,11 +493,15 @@ AUTHORING_FILE = "AUTHORING.md"
 
 def cmd_spec(args) -> int:
     """Print the brief that turns an idea into a prompt folder."""
-    path = Path(__file__).resolve().parent.parent / AUTHORING_FILE
-    if not path.is_file():
-        print(f"{AUTHORING_FILE} is missing from {path.parent}", file=sys.stderr)
+    # Installed, the brief sits beside this module; in a git checkout it is at
+    # the repo root, where GitHub renders it.
+    here = Path(__file__).resolve().parent
+    path = next((c for c in (here / AUTHORING_FILE, here.parent / AUTHORING_FILE)
+                 if c.is_file()), None)
+    if path is None:
+        print(f"{AUTHORING_FILE} is missing from {here}", file=sys.stderr)
         return 2
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     if not args.full:
         # Everything before the horizontal rule is instructions for the human
         # holding the terminal; the AI only needs what comes after it.
@@ -504,7 +509,7 @@ def cmd_spec(args) -> int:
         text = brief.lstrip() if sep else text
     if args.out:
         out = Path(args.out).expanduser()
-        out.write_text(text)
+        out.write_text(text, encoding="utf-8")
         print(f"wrote {out}")
     else:
         print(text)
@@ -520,7 +525,7 @@ def cmd_init(args) -> int:
         if path.exists():
             print(f"kept existing {path}")
             continue
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
         print(f"wrote {path}")
     print(f"\nNext:  imagegen validate {root}\n       imagegen run {root}")
     return 0
@@ -631,7 +636,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _prepare_streams() -> None:
+    """Never let an output character be the thing that kills a batch.
+
+    The status line, the rules and the spinner are all non-ASCII. Piped into a
+    file on a machine whose locale encoding is cp1252 — the Windows default —
+    writing one raises UnicodeEncodeError, and a run that generated 300 images
+    dies on a box-drawing glyph. UTF-8 where the stream allows it, and a
+    replacement character rather than an exception where it does not.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _prepare_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     choice = getattr(args, "color", "auto")

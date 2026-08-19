@@ -40,15 +40,45 @@ class C:
 _CODES = {k: v for k, v in vars(C).items() if not k.startswith("_") and isinstance(v, str)}
 
 
+def _enable_windows_ansi() -> bool:
+    """Turn on virtual-terminal processing for this console.
+
+    Windows Terminal, PowerShell 7 and modern conhost all render ANSI once the
+    console mode asks for it; without the call the codes print as literal text.
+    Returns False on the old consoles that cannot do it, so colour stays off
+    there rather than being emitted as garbage.
+    """
+    import ctypes
+
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+    STD_OUTPUT_HANDLE = -11
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING:
+            return True
+        return bool(kernel32.SetConsoleMode(
+            handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+    except (OSError, AttributeError):
+        return False
+
+
 def supports_colour(stream=None) -> bool:
     stream = stream or sys.stdout
     if os.environ.get("NO_COLOR"):
         return False
     if os.environ.get("FORCE_COLOR"):
         return True
-    if os.environ.get("TERM", "") in ("dumb", ""):
+    if not getattr(stream, "isatty", lambda: False)():
         return False
-    return bool(getattr(stream, "isatty", lambda: False)())
+    if os.name == "nt":
+        # Windows consoles set no TERM, so the check below would refuse colour
+        # on every one of them — including Windows Terminal, where it works.
+        return _enable_windows_ansi()
+    return os.environ.get("TERM", "") not in ("dumb", "")
 
 
 def configure(force: bool | None = None) -> None:

@@ -28,7 +28,7 @@ def log(msg: str, *, err: bool = False) -> None:
           file=sys.stderr if err else sys.stdout, flush=True)
     if _LOG_FILE is not None:
         try:
-            with _LOG_FILE.open("a") as fh:
+            with _LOG_FILE.open("a", encoding="utf-8") as fh:
                 # the file stays plain text: a log full of escape codes cannot be grepped
                 fh.write(f"[{stamp}] {ui.strip(msg)}\n")
         except OSError:

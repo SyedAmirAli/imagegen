@@ -260,7 +260,7 @@ def load_config(root: Path) -> dict:
     for name in CONFIG_NAMES:
         path = root / name
         if path.is_file():
-            data = yaml.safe_load(path.read_text()) or {}
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             if not isinstance(data, dict):
                 raise PromptError(f"{path} must contain a YAML mapping")
             return data
