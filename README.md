@@ -9,13 +9,16 @@ crash, a `Ctrl-C` or a closed browser costs at most the image in flight. Rerun t
 identical command and it continues from exactly where it stopped.
 
 ```bash
-./imagegen-cli run      ~/my-images        # a folder of Markdown prompts
-./imagegen-cli run      ~/batch.json       # …or a single JSON manifest
-./imagegen-cli status   ~/my-images        # how far along am I
-./imagegen-cli validate ~/my-images        # parse everything, report problems
-./imagegen-cli init     ~/my-images        # scaffold a prompt folder
-./imagegen-cli convert  ~/batch.json ~/my-images   # JSON → prompt folder
-./imagegen-cli spec                        # brief that turns an idea into either
+pip install imagegen-cli
+
+imagegen run      ~/my-images        # a folder of Markdown prompts
+imagegen run      ~/batch.json       # …or a single JSON manifest
+imagegen run      ~/batch/*.json     # …or several, as one resumable batch
+imagegen status   ~/my-images        # how far along am I
+imagegen validate ~/my-images        # parse everything, report problems
+imagegen init     ~/my-images        # scaffold a prompt folder
+imagegen convert  ~/batch.json ~/my-images   # JSON → prompt folder
+imagegen spec                        # brief that turns an idea into either
 ```
 
 **Two input formats, both first class.** A folder of Markdown prompt files, or a
@@ -51,22 +54,52 @@ Have an idea or a chat discussion rather than either? Hand
 ## 1. Install
 
 ```bash
-git clone git@github.com:SyedAmirAli/imagegen.git
-cd imagegen
-python3 -m pip install -r requirements.txt
-python3 -m playwright install chromium      # only if Playwright is not set up yet
+pipx install imagegen-cli          # or: python3 -m pip install imagegen-cli
+imagegen --version
 ```
 
-If your Python is externally managed (Debian/Ubuntu, PEP 668), use a virtualenv:
+The command is `imagegen`; `imagegen-cli` is installed as an alias, so every
+example in this README works under either name. `pipx` is the better choice for
+a CLI — it gets its own virtualenv and stays off your system Python, which also
+sidesteps the "externally managed environment" error on Debian and Ubuntu.
+
+Playwright's browser bundle is only needed if you want the tool to drive its own
+Chromium rather than one already on the machine:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python imagegen-cli run ~/my-images
+python3 -m playwright install chromium
 ```
 
 Nothing else is needed. The tool launches its own Chrome when the debugging port
 is not already live.
+
+### From a git checkout
+
+```bash
+git clone git@github.com:SyedAmirAli/imagegen.git
+cd imagegen
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/imagegen run ~/my-images
+```
+
+`./imagegen-cli` at the repo root runs the same code without installing anything,
+as long as the dependencies are importable.
+
+### Platforms
+
+Linux, macOS and Windows. There is nothing platform-specific in the pipeline —
+paths, the progress file and the lock are all handled natively on each — and the
+test suite runs on all three in CI.
+
+Two Windows notes:
+
+- Use **Windows Terminal or PowerShell 7** if you want the live progress line.
+  The legacy `cmd.exe` console cannot render ANSI, so the tool detects that and
+  falls back to plain output rather than printing escape codes at you.
+- Chrome is found automatically at its usual install locations (`Program Files`,
+  `%LOCALAPPDATA%`) even though it is not on `PATH`. Pass `--chrome-binary` if
+  you keep it somewhere unusual.
 
 ---
 
@@ -788,3 +821,11 @@ prompt wording first (§8), then add `--force-background-removal`.
 
 **"another run holds …/run.lock"** — a run is already going against that output
 folder. If you are certain nothing is running, delete the lock file.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE). Contributions welcome; the test suite runs on
+Linux, macOS and Windows, so a pull request that touches paths, encoding or
+process handling should keep all three green.

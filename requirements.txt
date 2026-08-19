@@ -1,10 +1,14 @@
+# The dependency list lives in pyproject.toml; this file is kept so that
+#   pip install -r requirements.txt
+# still works in an existing checkout. For anything new prefer:
+#   pip install -e .          (from a checkout)
+#   pip install imagegen-cli  (from PyPI)
 playwright>=1.40
 pillow>=10
 numpy>=1.24
 pyyaml>=6
 
 # Optional. Only used by --force-background-removal, and only when the image
-# does NOT have a flat backdrop the built-in flood fill can handle.
-# This machine's Python is externally managed, so install it in a venv:
-#   python3 -m venv .venv && .venv/bin/pip install -r requirements.txt rembg
+# does NOT have a flat backdrop the built-in flood fill can handle:
+#   pip install "imagegen-cli[rembg]"
 # rembg

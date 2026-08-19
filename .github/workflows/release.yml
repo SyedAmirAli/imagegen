@@ -1,0 +1,41 @@
+name: release
+
+# Publishes to PyPI when a version tag is pushed:
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# Uses PyPI Trusted Publishing, so there is no API token to store. Configure it
+# once at https://pypi.org/manage/account/publishing/ with:
+#   owner SyedAmirAli · repo imagegen · workflow release.yml · environment pypi
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 output/
+
+# packaging
+build/
+dist/
+*.egg-info/
+.pytest_cache/
