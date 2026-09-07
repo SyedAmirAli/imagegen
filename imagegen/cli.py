@@ -48,6 +48,14 @@ def _paths(args) -> SimpleNamespace:
     for item in raw:
         path = Path(item).expanduser().resolve()
         if not path.exists():
+            # `-0 out/` instead of `-o out/` is a zero for a letter o: argparse
+            # does not know the flag, so it arrives here as a source path.
+            if str(item).startswith("-"):
+                raise SystemExit(
+                    f"{item!r} is not an option this command knows, so it was read "
+                    f"as a source, and no such file exists.\n"
+                    f"Did you mean -o (the letter o), the output folder? "
+                    f"Run with --help for the options.")
             raise SystemExit(f"no such source: {path}")
         if path in sources:
             raise SystemExit(f"source given twice: {path}")
