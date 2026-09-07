@@ -9,8 +9,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 from . import __version__, backends, manifest, prompts, ui
@@ -25,14 +26,22 @@ STATE_DIRNAME = ".imagegen"
 def _paths(args) -> SimpleNamespace:
     """Resolve sources and output locations.
 
-    Several sources may be given at once — seven manifests that between them
-    describe one batch of 700 images are a single run, not seven. They are
-    loaded in the order typed and share one output folder and one progress file.
+    Several sources may be given at once. They share one run — one progress
+    file, one lock, one log — but not necessarily one folder:
 
-    Output directory precedence: --out, then the manifests' own `output_dir`
-    (which every manifest must agree on), then `<source>/output` for a single
-    source. A manifest's path is taken relative to the manifest file itself, so
-    the JSON stays portable — moving it moves its images.
+    * Sources that agree on an `output_dir` (or a single source) write straight
+      into it: seven manifests describing one batch of 700 images are one set
+      of images, and splitting them up would be wrong.
+    * Sources that disagree keep the structure each one declares, side by side
+      as subfolders of the run's output root. `batch-01.json` asking for
+      `batch-01-core/` puts its `01-mascots/mascot-blue.png` at
+      `<out>/batch-01-core/01-mascots/mascot-blue.png` — the same tree as
+      running the manifests one at a time, in one resumable run.
+
+    Output root precedence: --out, then the sources' agreed `output_dir`, then
+    `<source>/output` for a single source, then the folder the sources live in.
+    A manifest's path is taken relative to the manifest file itself, so the JSON
+    stays portable — moving it moves its images.
     """
     raw = args.sources if isinstance(args.sources, list) else [args.sources]
     sources = []
@@ -45,17 +54,22 @@ def _paths(args) -> SimpleNamespace:
         sources.append(path)
 
     declared = []       # (source, absolute output dir it asked for)
+    asked_raw: dict[Path, str] = {}     # source -> the path it wrote, verbatim
     for source in sources:
         if not prompts.is_manifest(source):
             continue
         asked = manifest.output_dir_of(manifest.read(source))
         if asked:
+            asked_raw[source] = asked
             declared.append((source, (source.parent / Path(asked).expanduser()).resolve()))
+
+    # One folder between them, or one folder each?
+    agreed = len(declared) == len(sources) and len({d for _, d in declared}) == 1
 
     if getattr(args, "out", None):
         out_dir = Path(args.out).expanduser().resolve()
         declared_output = None
-    elif len(declared) == len(sources) and len({d for _, d in declared}) == 1:
+    elif agreed:
         out_dir = declared[0][1]
         declared_output = manifest.output_dir_of(manifest.read(sources[0]))
     elif len(sources) == 1:
@@ -63,21 +77,18 @@ def _paths(args) -> SimpleNamespace:
         out_dir = (source.parent if prompts.is_manifest(source) else source) / "output"
         declared_output = None
     else:
-        # Silently picking one source's folder would scatter half the batch.
-        asked = dict(declared)
-        detail = "\n".join(
-            f"  {s.name} → {asked[s]}" if s in asked
-            else f"  {s.name} → (no output_dir; a prompt folder defaults to its own)"
-            for s in sources
-        )
-        raise SystemExit(
-            "these sources do not agree on one output folder, so pass -o/--out:\n"
-            + detail
-        )
+        # No root was named and the sources want different folders. Rooting the
+        # run where the sources live reproduces, file for file, what running
+        # them one at a time would have written.
+        out_dir = Path(os.path.commonpath([str(s.parent) for s in sources])).resolve()
+        declared_output = None
+
+    subfolders = {} if agreed or len(sources) == 1 else _subfolders(sources, asked_raw)
 
     state_dir = out_dir / STATE_DIRNAME
     return SimpleNamespace(
         sources=sources,
+        subfolders=subfolders,
         label=_label(sources),
         is_manifest=all(prompts.is_manifest(s) for s in sources),
         flat=bool(getattr(args, "flat", False)),
@@ -90,6 +101,50 @@ def _paths(args) -> SimpleNamespace:
         lock=state_dir / "run.lock",
         debug=state_dir / "debug",
     )
+
+
+def _subfolders(sources: list[Path], asked: dict[Path, str]) -> dict[Path, str]:
+    """One subfolder per source, for sources that each want their own tree.
+
+    A manifest's own `output_dir` is that subfolder — the structure it declares
+    is kept, just re-rooted under the run's output folder — and a source that
+    declares nothing falls back to its own name.
+
+    Two sources can still name the same folder (a dozen manifests all saying
+    `"output_dir": "images"`), which would merge them right back together. When
+    that happens *every* member of the colliding set falls back to its file
+    name, so a folder never depends on which source was typed first.
+    """
+    from collections import Counter
+
+    wanted: dict[Path, str] = {}
+    for source in sources:
+        rel = None
+        if source in asked:
+            path = PurePosixPath(str(asked[source]).replace("\\", "/"))
+            # An absolute or escaping path is not a subfolder of anything.
+            if not path.is_absolute() and ".." not in path.parts:
+                rel = "/".join(p for p in path.parts if p not in (".", ""))
+        wanted[source] = rel or _source_name(source)
+
+    counts = Counter(wanted.values())
+    taken: dict[str, Path] = {}
+    for source in sources:
+        name = wanted[source]
+        if counts[name] > 1:
+            name = _source_name(source)
+        if name in taken:               # two files of the same name, elsewhere
+            n = 2
+            while f"{name}-{n}" in taken:
+                n += 1
+            name = f"{name}-{n}"
+        taken[name] = source
+        wanted[source] = name
+    return wanted
+
+
+def _source_name(source: Path) -> str:
+    return source.stem if prompts.is_manifest(source) else source.name
 
 
 def _label(sources: list[Path]) -> str:
@@ -150,13 +205,40 @@ def _load_all(paths) -> tuple[list, list]:
     Two sources claiming the same id or the same output file would race each
     other into the same progress entry and the same PNG, so the second one is
     reported and dropped rather than half-overwriting the first.
+
+    When the sources each have their own subfolder (`paths.subfolders`) that
+    hardly ever applies: their images land in different folders, so a shared id
+    is two different images rather than a clash. Those ids are qualified with
+    the subfolder — and *both* sides are, so an id never depends on which source
+    was read first — instead of one of the images being dropped.
     """
+    from collections import Counter
+
     jobs, errors = [], []
     seen_ids: dict[str, Path] = {}
     seen_out: dict[str, Path] = {}
+
+    loaded_by_source = []
     for source in paths.sources:
-        loaded, source_errors = prompts.load_source(source, paths.out_dir)
+        sub = paths.subfolders.get(source)
+        loaded, source_errors = prompts.load_source(
+            source, paths.out_dir / sub if sub else paths.out_dir)
         errors.extend(source_errors)
+        # `output` is already under the subfolder; rel_output is what the run
+        # reports and de-duplicates on, so it is relative to the output root.
+        for job in loaded:
+            if sub:
+                job.rel_output = f"{sub}/{job.rel_output}"
+        loaded_by_source.append((source, sub, loaded))
+
+    if paths.subfolders:
+        shared = Counter(job.id for _, _, loaded in loaded_by_source for job in loaded)
+        for _, sub, loaded in loaded_by_source:
+            for job in loaded:
+                if shared[job.id] > 1:
+                    job.id = f"{sub}/{job.id}"
+
+    for source, _, loaded in loaded_by_source:
         for job in loaded:
             clash = seen_ids.get(job.id)
             if clash is not None and clash != source:
@@ -240,8 +322,11 @@ def cmd_validate(args) -> int:
         per = Counter(job.source for job in jobs)
         print(f"sources ({len(paths.sources)}):")
         for source in paths.sources:
-            print(f"  {per.get(source, 0):>5}  {source}")
+            sub = paths.subfolders.get(source)
+            print(f"  {per.get(source, 0):>5}  {source}"
+                  + (f"  →  {sub}/" if sub else ""))
     print(f"output → {paths.out_dir}"
+          + ("  (one subfolder per source)" if paths.subfolders else "")
           + (f"  (from the manifest's output_dir: {paths.declared_output!r})"
              if paths.declared_output else "")
           + ("  [flat: no subfolders]" if paths.flat else ""))
@@ -335,9 +420,14 @@ def cmd_run(args) -> int:
         + ui.paint(f"  ·  {args.backend}  ·  {_sources_line(paths)}", ui.C.GREY))
     if len(paths.sources) > 1:
         for source in paths.sources:
-            log(ui.paint("source   ", ui.C.GREY) + source.name)
+            sub = paths.subfolders.get(source)
+            log(ui.paint("source   ", ui.C.GREY) + source.name
+                + (ui.paint(f"  →  {sub}/", ui.C.GREY)
+                   if sub and not paths.flat else ""))
     log(ui.paint("output   ", ui.C.GREY) + str(paths.out_dir)
-        + (ui.paint("  (flat — no subfolders)", ui.C.GREY) if paths.flat else ""))
+        + (ui.paint("  (flat — no subfolders)", ui.C.GREY) if paths.flat else "")
+        + (ui.paint("  (one subfolder per source)", ui.C.GREY)
+           if paths.subfolders and not paths.flat else ""))
     log(ui.paint("prompts  ", ui.C.GREY)
         + f"{len(jobs)} total"
         + (f", {sync['added']} new" if sync["added"] else "")
@@ -548,7 +638,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="a folder of prompt files, or one or more .json "
                             "manifests to run as a single batch")
         p.add_argument("-o", "--out", default=None,
-                       help="output folder (default: <source>/output)")
+                       help="output folder — with several sources that want "
+                            "different folders, each keeps its own structure as "
+                            "a subfolder of this one (default: <source>/output, "
+                            "or a manifest's own output_dir)")
         p.add_argument("--backend", default=backends.DEFAULT_BACKEND,
                        choices=sorted(backends.BACKENDS),
                        help=f"generator backend (default: {backends.DEFAULT_BACKEND})")

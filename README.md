@@ -321,7 +321,7 @@ Markdown files in a directory tree.
 | Key | Meaning |
 |---|---|
 | `images` | **Required.** The list of images. `assets`, `items`, `prompts` and `entries` are accepted as aliases, and a bare top-level array works too. |
-| `output_dir` | Where images are written, **relative to the JSON file itself** so the manifest stays portable. Absolute paths are allowed. Defaults to `<json-file-folder>/output`, and `--out` overrides it. |
+| `output_dir` | Where images are written, **relative to the JSON file itself** so the manifest stays portable. Absolute paths are allowed. Defaults to `<json-file-folder>/output`, and `--out` overrides it. When several manifests run together and want different folders, this becomes the manifest's subfolder under the run's output root (see [§5](#several-manifests-one-batch)). |
 | `defaults` | Applied to every image, same fields as a folder's `imagegen.yaml` `defaults:` — `size`, `aspect`, `background`, `negative`, `prompt_prefix`, `prompt_suffix`. Unknown keys are ignored, so manifests carrying metadata for other tools load fine. |
 | `options` | Default CLI flags for this batch, e.g. `{"max_file_size": 1200, "flat": true}`. Flags you type still win. |
 | anything else | Ignored. `project`, `generated_at`, `sections` and friends are yours to keep. |
@@ -368,20 +368,46 @@ prompts  700 total, 700 new
 
 The rules:
 
-- **One output folder.** Every manifest must declare the same `output_dir`, or
-  you pass `-o/--out` and it wins. Mixed folders are refused rather than guessed
-  at, and a prompt folder cannot be combined with a manifest that names its own
-  output — half a batch landing somewhere else is worse than an error.
-- **One progress file**, in that shared output folder, so a resume covers the
+- **Manifests that agree on an `output_dir` write straight into it.** Seven
+  chunks of one 700-image set are one set of images, and splitting them into
+  seven folders would be wrong.
+- **Manifests that disagree keep the structure each one declares**, side by side
+  under the run's output folder. Twenty-five game batches, each asking for its
+  own folder, give you exactly the tree you would get from running them one at a
+  time — in one resumable run:
+
+  ```bash
+  ./imagegen-cli run ~/prompts/batch-*.json -o ~/game/assets
+  ```
+
+  ```
+  output   /home/me/game/assets  (one subfolder per source)
+  source   batch-01-core.json  →  batch-01-core/
+  source   batch-02-bubble.json  →  batch-02-bubble/
+  ```
+
+  ```
+  ~/game/assets/batch-01-core/01-mascots/mascot-blue.png
+  ~/game/assets/batch-02-bubble/01-bubbles/bubble-blue.png
+  ```
+
+  `-o/--out` names the root. Without it the root is the folder the manifests
+  live in, which reproduces what running them separately would have written.
+  Two manifests naming the same folder (both `"output_dir": "images"`) would
+  merge back together, so both fall back to their file names instead.
+- **One progress file**, in the run's output folder, so a resume covers the
   whole batch. Interrupt at image 430 of 700 and the next run picks up there.
-- **Ids and output paths must be unique across all the files.** A second file
-  reusing an id or a filename has that entry reported and skipped; the rest of
-  the file still runs.
+- **Ids and output paths must be unique across all the files** — within a shared
+  folder. A second file reusing an id or a filename has that entry reported and
+  skipped; the rest of the file still runs. Where each source has its own
+  subfolder this barely applies: the images are in different folders, and a
+  shared id is qualified with the subfolder on *both* sides (`batch-01/star`,
+  `batch-02/star`) rather than one image being dropped.
 - **`defaults` stay per-file** — each manifest's `prompt_suffix`, `size` and so
   on apply only to its own images, so chunks written at different times keep
   their own wording. Only `options` merge, last file wins.
-- `--flat` applies across the whole batch, so a name shared by two manifests is
-  renamed apart the same way it would be within one.
+- `--flat` applies across the whole batch — subfolders and all — so a name
+  shared by two manifests is renamed apart the same way it would be within one.
 
 ### Converting to a prompt folder
 
@@ -653,7 +679,7 @@ log. Force either way with `--color always|never`.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `-o, --out DIR` | manifest's `output_dir`, else `<source>/output` | where images are written |
+| `-o, --out DIR` | manifest's `output_dir`, else `<source>/output` | where images are written; with several sources that want different folders, each keeps its own structure as a subfolder of this one |
 | `--backend NAME` | `ideogram` | `ideogram` or `mock` |
 | `--limit N` | 0 (all) | stop after N successful images |
 | `--only ID` | — | generate just this id; repeatable |

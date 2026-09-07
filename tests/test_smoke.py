@@ -98,3 +98,67 @@ def test_dead_pid_is_not_alive():
 def test_spec_finds_its_brief(capsys):
     assert cli.main(["spec"]) == 0
     assert "imagegen" in capsys.readouterr().out
+
+
+# Two manifests that want different folders: one run, one progress file, but
+# each keeps the structure it declares. Their ids overlap on purpose — the same
+# image name in two batches is two images, not a clash.
+SIDE_A = {
+    "output_dir": "batch-a",
+    "images": [{"id": "star", "output": "icons/star.png", "prompt": "A gold star."},
+               {"id": "a-only", "output": "icons/moon.png", "prompt": "A moon."}],
+}
+SIDE_B = {
+    "output_dir": "batch-b",
+    "images": [{"id": "star", "output": "icons/star.png", "prompt": "A silver star."}],
+}
+
+
+@pytest.fixture
+def two_batches(tmp_path: Path) -> tuple[Path, Path]:
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps(SIDE_A), encoding="utf-8")
+    b.write_text(json.dumps(SIDE_B), encoding="utf-8")
+    return a, b
+
+
+def test_sources_that_disagree_each_get_their_own_subfolder(two_batches, tmp_path):
+    a, b = two_batches
+    out = tmp_path / "assets"
+    assert cli.main(["run", str(a), str(b), "-o", str(out), "--backend", "mock"]) == 0
+
+    assert (out / "batch-a" / "icons" / "star.png").is_file()
+    assert (out / "batch-a" / "icons" / "moon.png").is_file()
+    assert (out / "batch-b" / "icons" / "star.png").is_file()
+
+    # one run: a single progress file, with the shared id qualified on both
+    # sides rather than one of the two images being dropped
+    state = json.loads((out / ".imagegen" / "progress.json").read_text(encoding="utf-8"))
+    assert set(state["items"]) == {"batch-a/star", "batch-b/star", "a-only"}
+    assert all(i["status"] == "done" for i in state["items"].values())
+
+    # and it resumes as one run
+    assert cli.main(["run", str(a), str(b), "-o", str(out), "--backend", "mock"]) == 0
+
+
+def test_without_an_out_root_disagreeing_sources_land_where_they_declare(two_batches,
+                                                                        tmp_path):
+    a, b = two_batches
+    assert cli.main(["run", str(a), str(b), "--backend", "mock"]) == 0
+    # exactly what running each manifest on its own would have written
+    assert (tmp_path / "batch-a" / "icons" / "star.png").is_file()
+    assert (tmp_path / "batch-b" / "icons" / "star.png").is_file()
+
+
+def test_sources_agreeing_on_one_folder_are_not_split_up(tmp_path):
+    same = dict(SIDE_A, output_dir="images")
+    other = {"output_dir": "images",
+             "images": [{"id": "sun", "output": "icons/sun.png", "prompt": "A sun."}]}
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps(same), encoding="utf-8")
+    b.write_text(json.dumps(other), encoding="utf-8")
+
+    assert cli.main(["run", str(a), str(b), "--backend", "mock"]) == 0
+    out = tmp_path / "images"
+    assert sorted(p.name for p in (out / "icons").iterdir()) == ["moon.png", "star.png",
+                                                                "sun.png"]
