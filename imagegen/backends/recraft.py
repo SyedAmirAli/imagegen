@@ -429,21 +429,28 @@ class RecraftBackend(Backend):
         caller can fall back to folding the negative text into the main
         prompt instead.
         """
+        from playwright.sync_api import Error as PWError
+
         page = self._page
         trigger = page.locator(SETTINGS_TRIGGER).first
-        if not trigger.count():
+        # "Auto" has no settings popover at all: the gear stays in the DOM but
+        # hidden. count() alone would then hand Playwright an invisible
+        # element, burn its full 30s click timeout, and raise a TimeoutError
+        # that the runner does not retry on — aborting the whole run.
+        if not trigger.count() or not trigger.is_visible():
             return False
-        trigger.click()
-        page.wait_for_timeout(300)
-        field = page.locator(NEGATIVE_FIELD).first
-        if not field.count():
+        try:
+            trigger.click(timeout=10_000)
+            field = page.locator(NEGATIVE_FIELD).first
+            field.wait_for(state="visible", timeout=3_000)
+            field.click()
+            page.keyboard.press("Control+a")
+            page.keyboard.press("Delete")
+            page.keyboard.insert_text(text)
+            page.wait_for_timeout(200)
+        except PWError:
             page.keyboard.press("Escape")
             return False
-        field.click()
-        page.keyboard.press("Control+a")
-        page.keyboard.press("Delete")
-        page.keyboard.insert_text(text)
-        page.wait_for_timeout(200)
         page.keyboard.press("Escape")
         return True
 
