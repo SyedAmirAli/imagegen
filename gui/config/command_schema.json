@@ -1,0 +1,510 @@
+{
+  "version": 1,
+  "commands": {
+    "run": {
+      "description": "Generate images from prompts",
+      "arguments": [
+        {
+          "name": "sources",
+          "label": "Source(s)",
+          "help": "A folder of prompt files, or one or more .json manifests to run as a single batch",
+          "type": "path",
+          "path_type": "file_or_folder",
+          "file_filter": "JSON files (*.json);;All files (*)",
+          "required": true,
+          "multi": true
+        }
+      ],
+      "options": [
+        {
+          "flag": "--out",
+          "dest": "out",
+          "label": "Output Folder",
+          "help": "Output folder (default: <source>/output)",
+          "type": "folder",
+          "default": null,
+          "group": "common"
+        },
+        {
+          "flag": "--backend",
+          "dest": "backend",
+          "label": "Backend",
+          "help": "Generator backend",
+          "type": "choice",
+          "choices": ["ideogram", "mock"],
+          "default": "ideogram",
+          "group": "common"
+        },
+        {
+          "flag": "--color",
+          "dest": "color",
+          "label": "Color",
+          "help": "Colour and live progress display",
+          "type": "choice",
+          "choices": ["auto", "always", "never"],
+          "default": "auto",
+          "group": "common"
+        },
+        {
+          "flag": "--flat",
+          "dest": "flat",
+          "label": "Flat Output",
+          "help": "Write every image directly into the output folder instead of category subfolders",
+          "type": "boolean",
+          "default": false,
+          "group": "common"
+        },
+        {
+          "flag": "--state",
+          "dest": "state",
+          "label": "State File",
+          "help": "Override the progress file path",
+          "type": "file",
+          "default": null,
+          "group": "common"
+        },
+        {
+          "flag": "--limit",
+          "dest": "limit",
+          "label": "Limit",
+          "help": "Stop after N successful images (0 = no limit)",
+          "type": "integer",
+          "default": 0,
+          "group": "run_control"
+        },
+        {
+          "flag": "--only",
+          "dest": "only",
+          "label": "Only",
+          "help": "Generate just this ID (repeatable)",
+          "type": "repeatable_string",
+          "default": [],
+          "group": "run_control"
+        },
+        {
+          "flag": "--match",
+          "dest": "match",
+          "label": "Match",
+          "help": "Only IDs/paths matching this glob (repeatable)",
+          "type": "repeatable_string",
+          "default": [],
+          "group": "run_control"
+        },
+        {
+          "flag": "--retry-failed",
+          "dest": "retry_failed",
+          "label": "Retry Failed",
+          "help": "Re-queue items that previously failed",
+          "type": "boolean",
+          "default": false,
+          "group": "run_control"
+        },
+        {
+          "flag": "--redo-changed",
+          "dest": "redo_changed",
+          "label": "Redo Changed",
+          "help": "Re-queue done items whose prompt file was edited",
+          "type": "boolean",
+          "default": false,
+          "group": "run_control"
+        },
+        {
+          "flag": "--no-reconcile",
+          "dest": "no_reconcile",
+          "label": "No Reconcile",
+          "help": "Do not adopt images already present on disk as done",
+          "type": "boolean",
+          "default": false,
+          "group": "run_control"
+        },
+        {
+          "flag": "--dry-run",
+          "dest": "dry_run",
+          "label": "Dry Run",
+          "help": "Show what would be generated and exit",
+          "type": "boolean",
+          "default": false,
+          "group": "run_control"
+        },
+        {
+          "flag": "--force-background-removal",
+          "dest": "force_background_removal",
+          "label": "Force Background Removal",
+          "help": "After download, cut out the background when the image came back with none",
+          "type": "boolean",
+          "default": false,
+          "group": "background"
+        },
+        {
+          "flag": "--allow-upscale",
+          "dest": "allow_upscale",
+          "label": "Allow Upscale",
+          "help": "Resize up to the requested size instead of keeping native",
+          "type": "boolean",
+          "default": false,
+          "group": "background"
+        },
+        {
+          "flag": "--max-file-size",
+          "dest": "max_file_size",
+          "label": "Max File Size",
+          "help": "Compress any image larger than this many KB (bare flag = 1200)",
+          "type": "integer",
+          "default": 1200,
+          "group": "background"
+        },
+        {
+          "flag": "--max-attempts",
+          "dest": "max_attempts",
+          "label": "Max Attempts",
+          "help": "Tries per image",
+          "type": "integer",
+          "default": 3,
+          "group": "retry"
+        },
+        {
+          "flag": "--retry-backoff",
+          "dest": "retry_backoff",
+          "label": "Retry Backoff",
+          "help": "Seconds * attempt to wait before a retry",
+          "type": "float",
+          "default": 5.0,
+          "group": "retry"
+        },
+        {
+          "flag": "--min-gap",
+          "dest": "min_gap",
+          "label": "Min Gap",
+          "help": "Minimum pause between generations in seconds",
+          "type": "float",
+          "default": 4.0,
+          "group": "retry"
+        },
+        {
+          "flag": "--max-gap",
+          "dest": "max_gap",
+          "label": "Max Gap",
+          "help": "Maximum pause between generations in seconds",
+          "type": "float",
+          "default": 9.0,
+          "group": "retry"
+        },
+        {
+          "flag": "--cdp-url",
+          "dest": "cdp_url",
+          "label": "CDP URL",
+          "help": "Chrome DevTools endpoint",
+          "type": "string",
+          "default": "http://127.0.0.1:9222",
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--ideogram-url",
+          "dest": "ideogram_url",
+          "label": "Ideogram URL",
+          "help": "Page to open between generations",
+          "type": "string",
+          "default": "https://ideogram.ai/t/my-images",
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--chrome-binary",
+          "dest": "chrome_binary",
+          "label": "Chrome Binary",
+          "help": "Chrome executable (default: autodetect)",
+          "type": "file",
+          "default": null,
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--chrome-profile",
+          "dest": "chrome_profile",
+          "label": "Chrome Profile",
+          "help": "Dedicated Chrome profile directory",
+          "type": "folder",
+          "default": "~/.chrome-imagegen",
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--no-launch-chrome",
+          "dest": "no_launch_chrome",
+          "label": "No Launch Chrome",
+          "help": "Fail instead of starting Chrome when CDP port is dead",
+          "type": "boolean",
+          "default": false,
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--accept-timeout",
+          "dest": "accept_timeout",
+          "label": "Accept Timeout",
+          "help": "Seconds to wait for Ideogram to register a submitted request",
+          "type": "integer",
+          "default": 90,
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--gen-timeout",
+          "dest": "gen_timeout",
+          "label": "Gen Timeout",
+          "help": "Seconds to wait for one image",
+          "type": "integer",
+          "default": 420,
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--poll-interval",
+          "dest": "poll_interval",
+          "label": "Poll Interval",
+          "help": "Seconds between checks for a finished image",
+          "type": "float",
+          "default": 3.0,
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--reload-every",
+          "dest": "reload_every",
+          "label": "Reload Every",
+          "help": "Reload the tab every N generations to keep the DOM small (0=never)",
+          "type": "integer",
+          "default": 25,
+          "group": "ideogram_backend",
+          "backend_condition": "ideogram"
+        },
+        {
+          "flag": "--mock-fail-rate",
+          "dest": "mock_fail_rate",
+          "label": "Mock Fail Rate",
+          "help": "Probability that a mock generation raises (0-1)",
+          "type": "float",
+          "default": 0.0,
+          "group": "mock_backend",
+          "backend_condition": "mock"
+        },
+        {
+          "flag": "--mock-delay",
+          "dest": "mock_delay",
+          "label": "Mock Delay",
+          "help": "Seconds to fake-render",
+          "type": "float",
+          "default": 0.0,
+          "group": "mock_backend",
+          "backend_condition": "mock"
+        },
+        {
+          "flag": "--mock-transparent",
+          "dest": "mock_transparent",
+          "label": "Mock Transparent",
+          "help": "Emit an image that already has an alpha cut-out",
+          "type": "boolean",
+          "default": false,
+          "group": "mock_backend",
+          "backend_condition": "mock"
+        }
+      ]
+    },
+    "validate": {
+      "description": "Parse and report problems",
+      "arguments": [
+        {
+          "name": "sources",
+          "label": "Source(s)",
+          "help": "A folder of prompt files, or one or more .json manifests to run as a single batch",
+          "type": "path",
+          "path_type": "file_or_folder",
+          "file_filter": "JSON files (*.json);;All files (*)",
+          "required": true,
+          "multi": true
+        }
+      ],
+      "options": [
+        {
+          "flag": "--out",
+          "dest": "out",
+          "label": "Output Folder",
+          "help": "Output folder (default: <source>/output)",
+          "type": "folder",
+          "default": null,
+          "group": "common"
+        },
+        {
+          "flag": "--backend",
+          "dest": "backend",
+          "label": "Backend",
+          "help": "Generator backend",
+          "type": "choice",
+          "choices": ["ideogram", "mock"],
+          "default": "ideogram",
+          "group": "common"
+        },
+        {
+          "flag": "--color",
+          "dest": "color",
+          "label": "Color",
+          "help": "Colour and live progress display",
+          "type": "choice",
+          "choices": ["auto", "always", "never"],
+          "default": "auto",
+          "group": "common"
+        },
+        {
+          "flag": "--flat",
+          "dest": "flat",
+          "label": "Flat Output",
+          "help": "Write every image directly into the output folder instead of category subfolders",
+          "type": "boolean",
+          "default": false,
+          "group": "common"
+        }
+      ]
+    },
+    "status": {
+      "description": "Show progress",
+      "arguments": [
+        {
+          "name": "sources",
+          "label": "Source(s)",
+          "help": "A folder of prompt files, or one or more .json manifests to run as a single batch",
+          "type": "path",
+          "path_type": "file_or_folder",
+          "file_filter": "JSON files (*.json);;All files (*)",
+          "required": true,
+          "multi": true
+        }
+      ],
+      "options": [
+        {
+          "flag": "--out",
+          "dest": "out",
+          "label": "Output Folder",
+          "help": "Output folder (default: <source>/output)",
+          "type": "folder",
+          "default": null,
+          "group": "common"
+        },
+        {
+          "flag": "--backend",
+          "dest": "backend",
+          "label": "Backend",
+          "help": "Generator backend",
+          "type": "choice",
+          "choices": ["ideogram", "mock"],
+          "default": "ideogram",
+          "group": "common"
+        },
+        {
+          "flag": "--color",
+          "dest": "color",
+          "label": "Color",
+          "help": "Colour and live progress display",
+          "type": "choice",
+          "choices": ["auto", "always", "never"],
+          "default": "auto",
+          "group": "common"
+        },
+        {
+          "flag": "--flat",
+          "dest": "flat",
+          "label": "Flat Output",
+          "help": "Write every image directly into the output folder instead of category subfolders",
+          "type": "boolean",
+          "default": false,
+          "group": "common"
+        },
+        {
+          "flag": "--state",
+          "dest": "state",
+          "label": "State File",
+          "help": "Override the progress file path",
+          "type": "file",
+          "default": null,
+          "group": "common"
+        }
+      ]
+    },
+    "convert": {
+      "description": "Convert JSON manifest to prompt folder",
+      "arguments": [
+        {
+          "name": "manifest",
+          "label": "Manifest",
+          "help": "Path to the .json manifest",
+          "type": "path",
+          "path_type": "file",
+          "file_filter": "JSON files (*.json);;All files (*)",
+          "required": true,
+          "multi": false
+        },
+        {
+          "name": "folder",
+          "label": "Folder",
+          "help": "Prompt folder to create",
+          "type": "path",
+          "path_type": "folder",
+          "file_filter": "All files (*)",
+          "required": true,
+          "multi": false
+        }
+      ],
+      "options": [
+        {
+          "flag": "--force",
+          "dest": "force",
+          "label": "Force",
+          "help": "Overwrite prompt files that already exist",
+          "type": "boolean",
+          "default": false,
+          "group": "common"
+        }
+      ]
+    },
+    "init": {
+      "description": "Scaffold prompt folder",
+      "arguments": [
+        {
+          "name": "prompt_dir",
+          "label": "Prompt Directory",
+          "help": "Directory to scaffold as a prompt folder",
+          "type": "path",
+          "path_type": "folder",
+          "file_filter": "All files (*)",
+          "required": true,
+          "multi": false
+        }
+      ],
+      "options": []
+    },
+    "spec": {
+      "description": "Print authoring brief",
+      "arguments": [],
+      "options": [
+        {
+          "flag": "--out",
+          "dest": "out",
+          "label": "Out File",
+          "help": "Write brief to a file instead of stdout",
+          "type": "file_save",
+          "default": null,
+          "group": "common"
+        },
+        {
+          "flag": "--full",
+          "dest": "full",
+          "label": "Full",
+          "help": "Include the human-facing intro as well as the brief",
+          "type": "boolean",
+          "default": false,
+          "group": "common"
+        }
+      ]
+    }
+  }
+}

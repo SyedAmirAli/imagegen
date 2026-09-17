@@ -1,0 +1,1 @@
+"""ImageGen Desktop GUI package."""
