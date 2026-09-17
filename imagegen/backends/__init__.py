@@ -5,9 +5,11 @@ from __future__ import annotations
 from .base import Backend, BackendError, FatalBackendError, GenerationResult
 from .ideogram import IdeogramBackend
 from .mock import MockBackend
+from .recraft import RecraftBackend
 
 BACKENDS: dict[str, type[Backend]] = {
     IdeogramBackend.name: IdeogramBackend,
+    RecraftBackend.name: RecraftBackend,
     MockBackend.name: MockBackend,   # offline testing
 }
 

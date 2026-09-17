@@ -1,8 +1,8 @@
 # imagegen
 
 One reusable CLI for batch image generation. Point it at a folder of prompts and
-it drives a real, signed-in Ideogram session in Chrome — one image at a time, one
-tab — saving every result as a PNG at the path its prompt asks for.
+it drives a real, signed-in session — Ideogram or Recraft — in Chrome, one image
+at a time, one tab — saving every result as a PNG at the path its prompt asks for.
 
 It is built to be interrupted. Progress is written after every single image, so a
 crash, a `Ctrl-C` or a closed browser costs at most the image in flight. Rerun the
@@ -45,7 +45,7 @@ Have an idea or a chat discussion rather than either? Hand
 8. [Backgrounds and transparency](#8-backgrounds-and-transparency)
 9. [Resuming, retrying, skipping](#9-resuming-retrying-skipping)
 10. [Command reference](#10-command-reference)
-11. [Chrome and the Ideogram session](#11-chrome-and-the-ideogram-session)
+11. [Chrome and the web session](#11-chrome-and-the-web-session)
 12. [Adding another generator](#12-adding-another-generator)
 13. [Troubleshooting](#13-troubleshooting)
 
@@ -680,7 +680,7 @@ log. Force either way with `--color always|never`.
 | Flag | Default | Purpose |
 |---|---|---|
 | `-o, --out DIR` | manifest's `output_dir`, else `<source>/output` | where images are written; with several sources that want different folders, each keeps its own structure as a subfolder of this one |
-| `--backend NAME` | `ideogram` | `ideogram` or `mock` |
+| `--backend NAME` | `ideogram` | `ideogram`, `recraft` or `mock` |
 | `--limit N` | 0 (all) | stop after N successful images |
 | `--only ID` | — | generate just this id; repeatable |
 | `--match GLOB` | — | only ids/paths matching this glob; repeatable |
@@ -702,6 +702,14 @@ Ideogram backend flags: `--cdp-url` (default `http://127.0.0.1:9222`),
 `--ideogram-url`, `--chrome-binary`, `--chrome-profile` (default
 `~/.chrome-imagegen`), `--no-launch-chrome`, `--gen-timeout` (420s),
 `--accept-timeout` (90s), `--poll-interval` (3s), `--reload-every` (25).
+
+Recraft backend flags: `--recraft-cdp-url` (default `http://127.0.0.1:9223` — a
+different port from Ideogram's so both can run at once), `--recraft-project-url`
+(reuse a specific project; default: create one on first run and print its URL
+for reuse), `--recraft-model` (select a model by its visible name, e.g. `"Recraft
+V4.1"`; default: leave as Auto), `--recraft-chrome-binary`, `--recraft-chrome-profile`
+(default `~/.chrome-imagegen-recraft`), `--recraft-no-launch-chrome`,
+`--recraft-gen-timeout` (300s), `--recraft-poll-interval` (3s).
 
 Mock backend flags: `--mock-fail-rate`, `--mock-transparent`.
 
@@ -760,11 +768,17 @@ browser, unparseable prompt folder) · `130` interrupted.
 
 ---
 
-## 11. Chrome and the Ideogram session
+## 11. Chrome and the web session
 
-Images come from your signed-in web session, not a paid API key. The backend
+Images come from your signed-in web session, not a paid API key. Each backend
 launches Chrome itself with `--remote-debugging-port` on a **dedicated profile**
-(`~/.chrome-imagegen` by default) and reuses it if it is already running.
+(`~/.chrome-imagegen` for Ideogram, `~/.chrome-imagegen-recraft` for Recraft, by
+default) and reuses it if it is already running. Chrome is always started as a
+plain subprocess, never through Playwright's own launcher — Playwright's
+launcher sets automation fingerprints (`navigator.webdriver`, missing feature
+flags) that bot-detection such as Cloudflare Turnstile flags during sign-in; a
+normally-launched Chrome that Playwright only *attaches* to is indistinguishable
+from one you opened by hand.
 
 That separate profile is mandatory, not a preference: since Chrome 136 the
 debugging flag is *silently ignored* when `--user-data-dir` points at the default
@@ -772,26 +786,48 @@ profile — Chrome starts, the flag appears in the process list, and the DevTool
 server never binds. Your everyday Chrome can stay open; this is a separate
 instance.
 
-On first run, sign in to Ideogram inside that window once. The session persists
-from then on. To reuse a profile that is already signed in:
+On first run, sign in inside that window once. The session persists from then
+on. To reuse a profile that is already signed in:
 
 ```bash
 ./imagegen-cli run ~/my-images --chrome-profile ~/.chrome-ideogram-automation
+./imagegen-cli run ~/my-images --backend recraft --recraft-chrome-profile ~/.chrome-recraft-automation
 ```
 
 Keep the Chrome window open for the whole batch — closing it ends the run.
 
+Recraft also needs a **project** open (its canvas board), not just a signed-in
+session — a fresh account has none. First run creates one and prints its URL;
+pass that back as `--recraft-project-url` on later runs to keep reusing the same
+project instead of accumulating a new "Untitled" one every time:
+
+```bash
+./imagegen-cli run ~/my-images --backend recraft \
+  --recraft-project-url https://www.recraft.ai/project/<id>
+```
+
 ### How a finished image is identified
 
-The tool watches Ideogram's own API traffic (`/api/images/sample` and
-`/api/gallery/retrieve-requests`) and picks the request whose prompt is ours and
-whose creation time is after we pressed generate, then waits for it to reach
+**Ideogram**: the tool watches Ideogram's own API traffic (`/api/images/sample`
+and `/api/gallery/retrieve-requests`) and picks the request whose prompt is ours
+and whose creation time is after we pressed generate, then waits for it to reach
 100% before downloading.
 
 It deliberately does **not** diff the `<img>` tags on the page. Any page with a
 live feed — explore, a shared gallery, lazily loaded history — grows new images
 on its own, and a DOM diff will happily hand back a stranger's picture as "the
 one we just made". That failure is silent and produces plausible-looking files.
+
+**Recraft**: the editor renders every image onto a single `<canvas>` (a
+design-tool board, not a DOM gallery), so there is nothing to diff at all.
+Instead the tool watches the network response to *our own* submit request
+(`queue_recraft/prompt_to_image`), which hands back an `operationId` paired 1:1
+with that request, then waits for Recraft's own single follow-up call
+(`poll_recraft`) carrying that same id — a multipart body with the image bytes
+already inside it, so there is no separate download step. That poll response is
+never replayed by the tool itself (Recraft's client attaches an auth token said
+requests need, that a bare HTTP client doesn't have) — it is always the page's
+own already-authenticated call, just read passively.
 
 ---
 
@@ -838,9 +874,23 @@ a submission. Usually credits, a rate limit, or a UI change. Check
 **"Ideogram rejected the generation (HTTP …)"** — the account hit a quota or rate
 limit. Wait, then `--retry-failed`.
 
-**"aspect option … is in the DOM but not clickable"** — Ideogram changed its
-composer layout. The selectors live at the top of
-`imagegen/backends/ideogram.py`.
+**"aspect option … is in the DOM but not clickable"** — Ideogram or Recraft
+changed its composer layout. The selectors live at the top of
+`imagegen/backends/ideogram.py` / `imagegen/backends/recraft.py`.
+
+**"this Chrome profile is not signed in to Recraft"** — sign in inside the
+automation window, confirm a project opens, then rerun.
+
+**"could not set batch size to x1" (warning, not fatal)** — a freshly created
+Recraft project's settings controls can take a few seconds to finish hydrating
+after the quick-start screen; harmless once it happens, but generations in that
+run may cost extra credits per image (Recraft still generates the batch, this
+backend just only keeps the first result). Rerun with `--recraft-project-url`
+pointing at that same project and it won't happen again.
+
+**"Recraft's own poll_recraft call … never completed"** — the account hit a
+quota or rate limit, or the generation is unusually slow (a high-res or premium
+model). Raise `--gen-timeout`, or wait and `--retry-failed`.
 
 **Images come back opaque when you asked for transparency** — strengthen the
 prompt wording first (§8), then add `--force-background-removal`.
