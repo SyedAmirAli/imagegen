@@ -43,6 +43,14 @@ PROMPT_FIELD = '[data-testid="generation-panel-prompt-field"]'
 GENERATE_BUTTON = '[data-testid="generation-panel-generate-button"]'
 ASPECT_TRIGGER = '[data-testid="prompt-panel-aspect-ratio-trigger"]'
 MODEL_TRIGGER = '[data-testid="generation-panel-model-selector"]'
+MODEL_LIST = '[data-testid="dropdown-models-list"]'
+SETTINGS_TRIGGER = '[data-testid="prompt-panel-generation-settings"]'
+NEGATIVE_FIELD = 'textarea[name="negative-prompt"]'
+
+# Recraft's own prompt field silently truncates once a concrete model (e.g.
+# "Recraft V3") is picked — confirmed empirically at 1000 chars, not
+# documented anywhere, and it may differ per model. No default cap here:
+# trimming only happens when --recraft-max-prompt-chars is passed.
 BATCH_TRIGGER = '[data-testid="batch-size-trigger"]'
 SIGNED_OUT_MARKERS = ("sign in", "log in", "continue with google", "welcome to recraft studio")
 
@@ -125,6 +133,9 @@ class RecraftBackend(Backend):
                        help="seconds to wait for one image (default: 300)")
         g.add_argument("--recraft-poll-interval", type=float, default=3.0,
                        help="seconds between poll_recraft retries once submitted")
+        g.add_argument("--recraft-max-prompt-chars", type=int, default=None,
+                       help="trim prompts to this many characters before typing them in, "
+                            "at a word boundary (default: no trimming — send prompts as-is)")
 
     def __init__(self, args):
         super().__init__(args)
@@ -335,6 +346,17 @@ class RecraftBackend(Backend):
     def _normalise(text: str) -> str:
         return " ".join((text or "").split())
 
+    @staticmethod
+    def _clip_prompt(text: str, limit: int) -> str:
+        """Slice down to `limit` chars without cutting mid-word."""
+        if len(text) <= limit:
+            return text
+        clipped = text[:limit]
+        cut = clipped.rfind(" ")
+        if cut > limit // 2:  # don't butcher it if the last space is way back
+            clipped = clipped[:cut]
+        return clipped.rstrip(" ,.;:-\n")
+
     def _set_batch_size(self, n: int) -> None:
         page = self._page
         trigger = page.locator(BATCH_TRIGGER).first
@@ -374,16 +396,56 @@ class RecraftBackend(Backend):
         raise BackendError(f"could not set batch size to x{n} (try {attempt}/3)")
 
     def _set_model(self, name: str) -> None:
+        # The model picker is a `role="menu"`, not a `role="dialog"` like the
+        # aspect-ratio/batch-size popovers. Most models (e.g. "Recraft V4.1")
+        # sit directly in that top-level menu, but older ones (e.g. "Recraft
+        # V3") only exist in a per-vendor flyout reached by clicking the
+        # vendor's row under "All image models" first.
         page = self._page
         page.locator(MODEL_TRIGGER).first.click()
         page.wait_for_timeout(400)
-        popover = page.locator('[role="dialog"]:visible').last
-        option = popover.get_by_text(name, exact=True).first
+        menu = page.locator(MODEL_LIST)
+        option = menu.get_by_text(name, exact=True).first
+        if not option.count():
+            vendor = name.split()[0]
+            category = menu.get_by_role("menuitem", name=vendor, exact=True).first
+            if category.count():
+                category.click()
+                page.wait_for_timeout(300)
+                flyout = page.locator('[role="menu"]:visible').last
+                option = flyout.get_by_text(name, exact=True).first
         if not option.count():
             page.keyboard.press("Escape")
             raise BackendError(f"model {name!r} not found in the Model picker")
         option.click()
         page.wait_for_timeout(300)
+
+    def _set_negative(self, text: str) -> bool:
+        """Use Recraft's own "Negative prompt" field when it's on screen.
+
+        That field (under the settings-gear popover next to the aspect/
+        batch-size row) only exists once a concrete model is picked — "Auto"
+        has no settings gear at all. Returns False when unavailable, so the
+        caller can fall back to folding the negative text into the main
+        prompt instead.
+        """
+        page = self._page
+        trigger = page.locator(SETTINGS_TRIGGER).first
+        if not trigger.count():
+            return False
+        trigger.click()
+        page.wait_for_timeout(300)
+        field = page.locator(NEGATIVE_FIELD).first
+        if not field.count():
+            page.keyboard.press("Escape")
+            return False
+        field.click()
+        page.keyboard.press("Control+a")
+        page.keyboard.press("Delete")
+        page.keyboard.insert_text(text)
+        page.wait_for_timeout(200)
+        page.keyboard.press("Escape")
+        return True
 
     def _set_aspect(self, ratio: str) -> None:
         page = self._page
@@ -412,19 +474,28 @@ class RecraftBackend(Backend):
         raise BackendError(f"could not set aspect ratio to {ratio}")
 
     def _set_prompt(self, text: str) -> None:
+        # Right after a generation finishes, the composer can still be
+        # settling (re-rendering the result, possibly resizing the field
+        # itself for long text) — insert_text() on a busy field can silently
+        # lose its tail. Re-clicking and re-inserting from scratch, not just
+        # re-polling the same insert, is what actually recovers from that.
         page = self._page
         field = page.locator(PROMPT_FIELD).first
-        field.click()
-        page.keyboard.press("Control+a")
-        page.keyboard.press("Delete")
-        page.keyboard.insert_text(text)
-
         want = "".join(text.split())
-        for _ in range(24):
-            if "".join((field.input_value() or "").split()) == want:
-                return
-            time.sleep(0.25)
-        got = len("".join((field.input_value() or "").split()))
+
+        for attempt in range(1, 4):
+            field.click()
+            page.keyboard.press("Control+a")
+            page.keyboard.press("Delete")
+            page.keyboard.insert_text(text)
+
+            for _ in range(24):
+                if "".join((field.input_value() or "").split()) == want:
+                    return
+                time.sleep(0.25)
+            got = len("".join((field.input_value() or "").split()))
+            log(f"   prompt not fully entered ({got} of {len(want)} chars) — retry {attempt}/3")
+
         raise BackendError(f"prompt not fully entered ({got} of {len(want)} chars)")
 
     def _submit_and_wait(self, prompt: str) -> tuple[dict, dict[str, tuple[str, bytes]]]:
@@ -477,8 +548,12 @@ class RecraftBackend(Backend):
             self._set_model(self.args.recraft_model)
 
         prompt = job.prompt
-        if job.negative and job.negative.strip() not in prompt:
-            prompt = f"{prompt}\n\nNEGATIVE PROMPT (avoid entirely): {job.negative.strip()}"
+        if job.negative:
+            negative = job.negative.strip()
+            if negative not in prompt and not self._set_negative(negative):
+                # No settings gear (e.g. model left on "Auto") — fall back to
+                # folding it into the main prompt text.
+                prompt = f"{prompt}\n\nNEGATIVE PROMPT (avoid entirely): {negative}"
 
         self.report("setting aspect ratio", None)
         ratio = snap_aspect(job.aspect)
@@ -486,6 +561,13 @@ class RecraftBackend(Backend):
             if ratio != job.aspect:
                 log(f"   aspect {job.aspect} -> {ratio} (nearest Recraft offers)")
             self._set_aspect(ratio)
+
+        if self.args.recraft_max_prompt_chars:
+            clipped = self._clip_prompt(prompt, self.args.recraft_max_prompt_chars)
+            if len(clipped) != len(prompt):
+                log(f"   prompt trimmed to fit --recraft-max-prompt-chars "
+                    f"({len(prompt)} -> {len(clipped)} chars)")
+                prompt = clipped
 
         self.report("typing prompt", None)
         self._set_prompt(prompt)

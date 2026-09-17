@@ -169,7 +169,7 @@ no backdrop, no ground shadow, no scenery.
 | `size` | no | Final pixel size, `WIDTHxHEIGHT`. Omit to keep whatever the generator produces natively. The image is only ever downscaled to this; see `--allow-upscale`. |
 | `aspect` | no | Ratio requested from the generator, e.g. `"1:1"`, `"3:4"`, `"16:9"`. Quote it — bare `16:9` is not valid YAML. Derived from `size` when omitted. A ratio the generator does not offer is snapped to the nearest one it does, and the substitution is logged. |
 | `background` | no | `transparent`, `opaque`, or omitted. This is an instruction to *you and the tool*, not to the model — put the actual wording in the prompt too. See §8. |
-| `negative` | no | Things to avoid. Ideogram's current composer has no separate negative field, so this is appended to the prompt as `NEGATIVE PROMPT (avoid entirely): …` unless that text already appears in the prompt. |
+| `negative` | no | Things to avoid. Ideogram's composer has no separate negative field, so this is appended to the prompt as `NEGATIVE PROMPT (avoid entirely): …` unless that text already appears in the prompt. Recraft has a real "Negative prompt" field (shown once a concrete `--recraft-model` is selected — "Auto" has none) and uses that instead; it only falls back to the Ideogram-style append when that field isn't on screen. |
 
 Any other key you add is preserved and passed through to the backend, so a future
 backend can read `model:`, `seed:` or `style:` without changing the core.
@@ -709,7 +709,11 @@ different port from Ideogram's so both can run at once), `--recraft-project-url`
 for reuse), `--recraft-model` (select a model by its visible name, e.g. `"Recraft
 V4.1"`; default: leave as Auto), `--recraft-chrome-binary`, `--recraft-chrome-profile`
 (default `~/.chrome-imagegen-recraft`), `--recraft-no-launch-chrome`,
-`--recraft-gen-timeout` (300s), `--recraft-poll-interval` (3s).
+`--recraft-gen-timeout` (300s), `--recraft-poll-interval` (3s),
+`--recraft-max-prompt-chars` (trim prompts to this many characters, at a word
+boundary, before typing them in; default: off, send prompts as-is — Recraft's
+own field silently truncates around 1000 characters once a concrete model
+like `"Recraft V3"` is selected, so pass this if you hit that).
 
 Mock backend flags: `--mock-fail-rate`, `--mock-transparent`.
 
