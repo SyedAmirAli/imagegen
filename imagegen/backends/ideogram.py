@@ -11,18 +11,12 @@ the DevTools server never binds. This backend launches such a profile itself.
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import socket
-import subprocess
-import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from ..logging_utils import log
+from . import _chrome
 from .base import Backend, BackendError, FatalBackendError, GenerationResult
 
 DEFAULT_CDP = "http://127.0.0.1:9222"
@@ -71,80 +65,6 @@ def snap_aspect(requested: str | None) -> str | None:
     return min(ASPECT_LABELS, key=lambda k: abs(_ratio_value(k) - want))
 
 
-def _find_chrome() -> str | None:
-    """Locate a Chrome-family browser.
-
-    On Linux the browsers put themselves on PATH, so `which` is enough. On
-    Windows and macOS they do not, and the installer paths are the only
-    reliable answer — hence the list of the places they actually land.
-    """
-    if sys.platform == "win32":
-        names = ("chrome", "chromium", "brave", "msedge")
-        roots = [os.environ.get(var) for var in
-                 ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
-        relative = (
-            r"Google\Chrome\Application\chrome.exe",
-            r"Chromium\Application\chrome.exe",
-            r"BraveSoftware\Brave-Browser\Application\brave.exe",
-            r"Microsoft\Edge\Application\msedge.exe",
-        )
-        known = [Path(root) / rel for root in roots if root for rel in relative]
-    elif sys.platform == "darwin":
-        names = ("google-chrome", "chromium")
-        known = [Path(prefix) / rel for prefix in ("/Applications",
-                                                   Path.home() / "Applications")
-                 for rel in (
-                     "Google Chrome.app/Contents/MacOS/Google Chrome",
-                     "Chromium.app/Contents/MacOS/Chromium",
-                     "Brave Browser.app/Contents/MacOS/Brave Browser",
-                     "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-                 )]
-    else:
-        names = ("google-chrome", "google-chrome-stable", "chromium",
-                 "chromium-browser", "brave-browser")
-        known = []
-
-    for name in names:
-        found = shutil.which(name)
-        if found:
-            return found
-    for path in known:
-        if path.is_file():
-            return str(path)
-    return None
-
-
-def _default_profile_dirs() -> list[Path]:
-    """Chrome's own profile folders, which must never be reused for automation.
-
-    Chrome 136+ ignores --remote-debugging-port when it is pointed at these, so
-    a run against one hangs waiting for a port that will never open. Better to
-    say so than to time out.
-    """
-    home = Path.home()
-    if sys.platform == "win32":
-        local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
-        return [local / "Google" / "Chrome" / "User Data",
-                local / "Chromium" / "User Data",
-                local / "Microsoft" / "Edge" / "User Data"]
-    if sys.platform == "darwin":
-        support = home / "Library" / "Application Support"
-        return [support / "Google" / "Chrome",
-                support / "Chromium",
-                support / "Microsoft Edge"]
-    return [home / ".config" / "google-chrome",
-            home / ".config" / "chromium",
-            home / ".config" / "microsoft-edge"]
-
-
-def _cdp_alive(cdp_url: str, timeout: float = 2.0) -> bool:
-    try:
-        with urllib.request.urlopen(f"{cdp_url.rstrip('/')}/json/version", timeout=timeout):
-            return True
-    except (urllib.error.URLError, socket.timeout, ConnectionError, OSError):
-        return False
-
-
 class IdeogramBackend(Backend):
     name = "ideogram"
 
@@ -184,7 +104,7 @@ class IdeogramBackend(Backend):
     def open(self) -> None:
         from playwright.sync_api import sync_playwright
 
-        if not _cdp_alive(self.args.cdp_url):
+        if not _chrome.cdp_alive(self.args.cdp_url):
             if self.args.no_launch_chrome:
                 raise FatalBackendError(
                     f"no Chrome DevTools endpoint at {self.args.cdp_url} "
@@ -213,41 +133,27 @@ class IdeogramBackend(Backend):
         log(f"   attached to {page.url}")
 
     def _launch_chrome(self) -> None:
-        binary = self.args.chrome_binary or _find_chrome()
+        binary = self.args.chrome_binary or _chrome.find_chrome_binary()
         if binary is None:
             raise FatalBackendError("no Chrome binary found; pass --chrome-binary")
 
         profile = Path(self.args.chrome_profile).expanduser()
-        if any(profile.resolve() == d.resolve() for d in _default_profile_dirs()):
+        if any(profile.resolve() == d.resolve() for d in _chrome.default_profile_dirs()):
             raise FatalBackendError(
                 "--chrome-profile must not be Chrome's default profile: Chrome 136+ "
                 "silently refuses to open the debugging port there"
             )
         first_run = not profile.exists()
         profile.mkdir(parents=True, exist_ok=True)
-        port = self.args.cdp_url.rsplit(":", 1)[-1].strip("/")
 
         log(f"   launching {binary} (profile: {profile})")
-        # Chrome must outlive the terminal that started it. POSIX does that with
-        # its own session; Windows has no such argument and uses creation flags.
-        detach = ({"creationflags": subprocess.DETACHED_PROCESS
-                                    | subprocess.CREATE_NEW_PROCESS_GROUP}
-                  if os.name == "nt" else {"start_new_session": True})
-        subprocess.Popen(
-            [binary, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
-             "--no-first-run", "--no-default-browser-check",
-             "--disable-session-crashed-bubble", self.args.ideogram_url],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            **detach,
-        )
-        for _ in range(40):
-            time.sleep(1)
-            if _cdp_alive(self.args.cdp_url):
-                log("   Chrome is up and the debugging port is live")
-                if first_run:
-                    log("   FIRST RUN: sign in to Ideogram in the new window, then this run continues")
-                return
-        raise FatalBackendError(f"Chrome did not expose {self.args.cdp_url} within 40s")
+        try:
+            _chrome.launch_chrome(binary, profile, self.args.cdp_url, self.args.ideogram_url)
+        except RuntimeError as exc:
+            raise FatalBackendError(str(exc)) from exc
+        log("   Chrome is up and the debugging port is live")
+        if first_run:
+            log("   FIRST RUN: sign in to Ideogram in the new window, then this run continues")
 
     def _await_editor(self, timeout: int = 60_000) -> None:
         from playwright.sync_api import TimeoutError as PWTimeout
