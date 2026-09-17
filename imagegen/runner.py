@@ -119,6 +119,7 @@ class Runner:
         self._stage_fraction = None
         self._spin = 0
         self._stop = False
+        self._delay_at = 0   # stats.generated count the last cooldown fired at
         backend.progress_hook = self._on_backend_progress
         signal.signal(signal.SIGINT, self._on_sigint)
         signal.signal(signal.SIGTERM, self._on_sigint)
@@ -181,6 +182,7 @@ class Runner:
                     break
                 if index > 1 and not self._stop:
                     self._wait(random.uniform(self.opts.min_gap, self.opts.max_gap))
+                    self._maybe_cooldown()
                 self._run_one(job, index, total)
         except Stop:
             pass
@@ -196,14 +198,30 @@ class Runner:
         self.stats.elapsed = self.clock.elapsed
         return self.stats
 
-    def _wait(self, seconds: float) -> None:
+    def _wait(self, seconds: float, label: str = "pausing") -> None:
         """Pause between generations, keeping the status line alive."""
         deadline = time.time() + seconds
         while time.time() < deadline and not self._stop:
-            self._stage = f"pausing {deadline - time.time():.0f}s"
+            self._stage = f"{label} {deadline - time.time():.0f}s"
             self._stage_fraction = None
             self._render()
             time.sleep(min(0.12, max(0.0, deadline - time.time())))
+
+    def _maybe_cooldown(self) -> None:
+        """--delay COUNT:SECONDS: an extra pause every COUNT successful images.
+
+        Keyed off stats.generated (successes only) rather than the loop index,
+        so a run peppered with failures still cools down on actual output, not
+        on attempts — and _delay_at guards against re-firing on the same count
+        if this is ever called more than once per generated image.
+        """
+        every = self.opts.delay_every
+        if not every or self._stop:
+            return
+        generated = self.stats.generated
+        if generated and generated % every == 0 and generated != self._delay_at:
+            self._delay_at = generated
+            self._wait(self.opts.delay_seconds, label=f"cooldown (every {every})")
 
     def _run_one(self, job, index: int, total: int) -> None:
         item = self.progress.get(job.id)

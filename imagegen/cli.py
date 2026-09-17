@@ -456,6 +456,9 @@ def cmd_run(args) -> int:
     if args.force_background_removal:
         log("background removal is FORCED for every prompt that does not ask for an "
             "opaque background (images that already have alpha are left untouched)")
+    if args.delay:
+        count, seconds = args.delay
+        log(f"extra pause of {seconds:g}s after every {count} successful generation(s)")
     rule("━")
 
     if args.dry_run:
@@ -475,6 +478,8 @@ def cmd_run(args) -> int:
         retry_backoff=args.retry_backoff,
         min_gap=args.min_gap,
         max_gap=max(args.max_gap, args.min_gap),
+        delay_every=args.delay[0] if args.delay else None,
+        delay_seconds=args.delay[1] if args.delay else 0.0,
         force_background_removal=args.force_background_removal,
         allow_upscale=args.allow_upscale,
         max_file_bytes=args.max_file_size * 1024 if args.max_file_size else None,
@@ -633,6 +638,28 @@ def cmd_init(args) -> int:
 # parser
 # ---------------------------------------------------------------------------
 
+def _parse_delay(value: str) -> tuple[int, float]:
+    """Parse `--delay COUNT:SECONDS`, e.g. "1:5" -> pause 5s after every image."""
+    count_s, sep, seconds_s = value.partition(":")
+    if not sep:
+        raise argparse.ArgumentTypeError(
+            f"--delay must be COUNT:SECONDS, e.g. 1:5 for a 5s pause after every image "
+            f"(got {value!r})"
+        )
+    try:
+        count = int(count_s)
+        seconds = float(seconds_s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--delay must be COUNT:SECONDS, e.g. 1:5 (got {value!r})"
+        )
+    if count <= 0:
+        raise argparse.ArgumentTypeError(f"--delay COUNT must be a positive integer, got {count}")
+    if seconds < 0:
+        raise argparse.ArgumentTypeError(f"--delay SECONDS must not be negative, got {seconds}")
+    return count, seconds
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="imagegen",
@@ -690,6 +717,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="minimum pause between generations (default: 4s)")
     p_run.add_argument("--max-gap", type=float, default=9.0,
                        help="maximum pause between generations (default: 9s)")
+    p_run.add_argument("--delay", type=_parse_delay, default=None, metavar="COUNT:SECONDS",
+                       help="extra pause of SECONDS after every COUNT successful generations, "
+                            "on top of --min-gap/--max-gap (e.g. --delay 1:5 waits an extra 5s "
+                            "after every image; --delay 5:30 waits 30s after every 5th)")
     p_run.add_argument("--dry-run", action="store_true",
                        help="show what would be generated and exit")
     for cls in backends.BACKENDS.values():
