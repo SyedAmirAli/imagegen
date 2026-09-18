@@ -29,8 +29,14 @@ SUBMIT_API = "/api/images/sample"
 POLL_API = "/api/gallery/retrieve-requests"
 
 EDITOR = ".tiptap-prompt-editor"
-ASPECT_TRIGGER = '[data-testid="aspect-ratio-config-container"]'
-GENERATE_BUTTON = '[data-testid="generate-button"]'
+# Ideogram's 2026-09 redesign dropped the data-testids these two used to
+# carry (`aspect-ratio-config-container`, `generate-button`) — nothing in the
+# DOM identifies either one on its own any more. `ASPECT_TRIGGER` is unique by
+# itself (an aria-label survived); `GENERATE_BUTTON`'s class is shared with
+# unrelated controls elsewhere on the page (e.g. the gallery's search
+# button), so it must always be looked up scoped to `_composer_root()`.
+ASPECT_TRIGGER = '[aria-label="Aspect ratio"]'
+GENERATE_BUTTON = "button.nova-pill-button-round"
 SIGNED_OUT_MARKERS = ("sign in", "log in", "continue with google", "sign up")
 
 # Ideogram's aspect buttons. The panel labels the square one differently from
@@ -248,6 +254,23 @@ class IdeogramBackend(Backend):
             return None
         return max(candidates, key=lambda e: float(e.get("creation_time_float") or 0))
 
+    def _composer_root(self):
+        """The toolbar box around the editor — model/count/aspect/Generate.
+
+        Nothing about this box itself is identifiable (its classes are
+        hashed, deploy to deploy); it is found by walking up from the editor
+        until an ancestor contains `ASPECT_TRIGGER`, which is unique. Every
+        lookup that is not unique on its own (`GENERATE_BUTTON`) must be
+        scoped to this, or it can match an unrelated same-styled control
+        elsewhere on the page.
+        """
+        editor = self._page.locator(EDITOR).first
+        for levels in range(1, 10):
+            container = editor.locator(f"xpath=ancestor::div[{levels}]")
+            if container.locator(ASPECT_TRIGGER).count():
+                return container
+        raise BackendError("could not locate the Ideogram composer toolbar")
+
     def _ensure_composer_open(self) -> None:
         """Expand the composer so its settings bar is clickable.
 
@@ -257,7 +280,7 @@ class IdeogramBackend(Backend):
         """
         from playwright.sync_api import TimeoutError as PWTimeout
 
-        trigger = self._page.locator(ASPECT_TRIGGER).first
+        trigger = self._composer_root().locator(ASPECT_TRIGGER).first
         if trigger.count() and trigger.is_visible():
             return
         self._page.locator(EDITOR).first.click()
@@ -324,7 +347,7 @@ class IdeogramBackend(Backend):
         self._last_submit_status = None
         submitted_at = time.time()
         self.report("submitting", 0.0)
-        self._page.locator(GENERATE_BUTTON).first.click()
+        self._composer_root().locator(GENERATE_BUTTON).first.click()
 
         deadline = submitted_at + self.args.gen_timeout
         entry = None
@@ -384,6 +407,14 @@ class IdeogramBackend(Backend):
         if self._page is None:
             raise FatalBackendError("backend is not open")
 
+        from playwright.sync_api import Error as PWError
+
+        try:
+            return self._generate(job)
+        except PWError as exc:
+            raise BackendError(str(exc)) from exc
+
+    def _generate(self, job) -> GenerationResult:
         if self.args.reload_every and self._generated and \
                 self._generated % self.args.reload_every == 0:
             log("   periodic tab reload")

@@ -100,6 +100,7 @@ def _paths(args) -> SimpleNamespace:
         label=_label(sources),
         is_manifest=all(prompts.is_manifest(s) for s in sources),
         flat=bool(getattr(args, "flat", False)),
+        allow_any_format=bool(getattr(args, "allow_any_format", False)),
         declared_output=declared_output,
         out_dir=out_dir,
         state_dir=state_dir,
@@ -230,7 +231,8 @@ def _load_all(paths) -> tuple[list, list]:
     for source in paths.sources:
         sub = paths.subfolders.get(source)
         loaded, source_errors = prompts.load_source(
-            source, paths.out_dir / sub if sub else paths.out_dir)
+            source, paths.out_dir / sub if sub else paths.out_dir,
+            allow_any_format=paths.allow_any_format)
         errors.extend(source_errors)
         # `output` is already under the subfolder; rel_output is what the run
         # reports and de-duplicates on, so it is relative to the output root.
@@ -405,6 +407,7 @@ def cmd_run(args) -> int:
     config = _merged_options(paths)
     applied = apply_config_defaults(args, args._parser, config)
     paths.flat = bool(args.flat)   # imagegen.yaml may have just switched it on
+    paths.allow_any_format = bool(args.allow_any_format)
 
     jobs = _load(paths)
     progress = Progress(paths.state, paths.label, args.backend)
@@ -685,6 +688,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--flat", action="store_true",
                        help="write every image directly into the output folder "
                             "instead of category subfolders")
+        p.add_argument("--allow-any-format", action="store_true",
+                       help="save each image in the format its own `output:` extension "
+                            "asks for (.jpg, .webp, ...) instead of requiring .png")
 
     p_run = sub.add_parser("run", help="generate everything still pending")
     add_common(p_run)

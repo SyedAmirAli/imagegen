@@ -827,11 +827,13 @@ design-tool board, not a DOM gallery), so there is nothing to diff at all.
 Instead the tool watches the network response to *our own* submit request
 (`queue_recraft/prompt_to_image`), which hands back an `operationId` paired 1:1
 with that request, then waits for Recraft's own single follow-up call
-(`poll_recraft`) carrying that same id — a multipart body with the image bytes
-already inside it, so there is no separate download step. That poll response is
-never replayed by the tool itself (Recraft's client attaches an auth token said
-requests need, that a bare HTTP client doesn't have) — it is always the page's
-own already-authenticated call, just read passively.
+(`poll_recraft`) carrying that same id. That reply names the job's image ids —
+either as a multipart body with the image bytes inline, or as a plain JSON
+manifest; when it is JSON the browser fetches the pixels next, from a signed
+`img.recraft.ai` URL, and the tool reads the bytes off that response. None of
+these are replayed by the tool itself (Recraft's client attaches an auth token
+said requests need, that a bare HTTP client doesn't have) — they are always the
+page's own already-authenticated calls, just read passively.
 
 ---
 
@@ -892,9 +894,12 @@ run may cost extra credits per image (Recraft still generates the batch, this
 backend just only keeps the first result). Rerun with `--recraft-project-url`
 pointing at that same project and it won't happen again.
 
-**"Recraft's own poll_recraft call … never completed"** — the account hit a
-quota or rate limit, or the generation is unusually slow (a high-res or premium
-model). Raise `--gen-timeout`, or wait and `--retry-failed`.
+**"image not finished after …s" (Recraft)** — the account hit a quota or rate
+limit, or the generation is unusually slow (a high-res or premium model). The
+message also says where the wait got to: a poll reply that never named an image
+means it never finished rendering, while "the manifest named … but its image
+bytes never arrived" means Recraft finished but the browser never fetched the
+picture. Raise `--recraft-gen-timeout`, or wait and `--retry-failed`.
 
 **Images come back opaque when you asked for transparency** — strengthen the
 prompt wording first (§8), then add `--force-background-removal`.

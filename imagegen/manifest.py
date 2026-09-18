@@ -142,7 +142,8 @@ def _entry_output(entry: dict, fallback_id: str) -> str:
     return f"{folder}/{filename}" if folder else filename
 
 
-def parse(path: Path, out_root: Path, *, defaults: dict | None = None):
+def parse(path: Path, out_root: Path, *, defaults: dict | None = None,
+          allow_any_format: bool = False):
     """Return (jobs, errors) for a manifest file."""
     data = read(path)
     entries = image_list(data)
@@ -172,7 +173,7 @@ def parse(path: Path, out_root: Path, *, defaults: dict | None = None):
             rel_output = _entry_output(entry, job_id)
             if not PurePosixPath(rel_output).suffix:
                 rel_output += ".png"
-            check_output_path(rel_output)
+            check_output_path(rel_output, allow_any_format=allow_any_format)
 
             size = _entry_size(entry) or parse_size(merged_defaults.get("size"))
             aspect = str(_first(entry, FIELD_ALIASES["aspect"]) or "").strip()

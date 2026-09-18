@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(git:*)",
+      "Shell(.venv/bin/python:*)",
+      "Shell(cd /home/syedamirali/Desktop/Automations/imagegen && git commit -F - <<'EOF' fix: stop Recraft negative-prompt lookup from killing the whole run _set_negative() only checked trigger.count() before clicking the settings gear, but count() is DOM presence, not visibility. With the model left on \"Auto\" Recraft renders the gear in the DOM and keeps it hidden — so the click resolved to an invisible element, burned Playwright's full 30s actionability timeout, and raised a Playwright TimeoutError. That exception is not a subclass of RuntimeError, so the runner's retry handler never saw it: instead of a retried/fallen-back image, job 1 of 50 aborted the entire batch with a traceback, even though the docstring promises \"Returns False when unavailable\" so the caller can fold the negative text into the prompt. Gate the gear on is_visible() (mirroring ideogram's _ensure_composer_open), wait for the negative field to actually render instead of a flat 300ms sleep, and treat any Playwright error while opening/typing as \"unavailable\" so the documented prompt-folding fallback runs instead of crashing. Co-authored-by: CommandCodeBot <noreply@commandcode.ai> EOF)",
+      "Shell(agent-browser --version 2>&1; echo \"---\"; agent-browser open --help 2>&1)",
+      "Shell(agent-browser:*)",
+      "Shell(for:*)",
+      "Shell(do:*)",
+      "Shell(done:*)",
+      "Shell(curl -s --max-time 3 http://127.0.0.1:9223/json/version)",
+      "Shell(curl -s --max-time 3 http://127.0.0.1:9223/json/list)",
+      "Shell(cat > \"$COMMANDCODE_SCRATCHPAD/probe_recraft.py\" <<'PYEOF' \"\"\"One instrumented Recraft generation: log every response, dump JSON/text bodies.\"\"\" import pathlib import re import sys REPO = \"/home/syedamirali/Desktop/Automations/imagegen\" SCRATCH = pathlib.Path(__file__).resolve().parent sys.path.insert(0, REPO) from imagegen import cli # noqa: E402 from imagegen.backends import recraft # noqa: E402 bodies = SCRATCH / \"bodies\" bodies.mkdir(parents=True, exist_ok=True) netlog = (SCRATCH / \"net.log\").open(\"w\", encoding=\"utf-8\") counter = {\"i\": 0} orig = recraft.RecraftBackend._on_response def slug(url: str) -> str: return re.sub(r\"[^A-Za-z0-9._-]+\", \"_\", url.split(\"?\")[0])[-70:] def spy(self, response): try: ct = (response.headers or {}).get(\"content-type\", \"\") url = response.url or \"\" netlog.write(f\"{response.status} {ct} {url}\\n\") netlog.flush() low = ct.lower() if response.status == 200 and (\"json\" in low or \"text\" in low) and \"recraft\" in url: body = response.body() counter[\"i\"] += 1 (bodies / f\"{counter['i']:03d}_{slug(url)}.txt\").write_bytes(body[:300000]) except Exception as exc: netlog.write(f\"spy-error {type(exc).__name__} {exc}\\n\") return orig(self, response) recraft.RecraftBackend._on_response = spy argv = [ \"run\", \"/home/syedamirali/Desktop/shihab/jsons/premium_white_3d_2d_2000_prompts.json\", \"--flat\", \"--backend\", \"recraft\", \"--max-file-size\", \"10000\", \"--recraft-gen-timeout\", \"60\", \"--allow-any-format\", \"--no-reconcile\", \"--recraft-project-url\", \"https://www.recraft.ai/project/c6b40f9b-96c0-4467-bd0b-5180e6a532ce\", \"--only\", \"premium-white-0094\", \"--limit\", \"1\", ] rc = cli.main(argv) netlog.close() print(f\"\\nprobe exit {rc}; bodies dumped: {counter['i']}\") sys.exit(rc) PYEOF echo \"written:\"; ls -la \"$COMMANDCODE_SCRATCHPAD/probe_recraft.py\")",
+      "Shell(SD=\"$COMMANDCODE_SCRATCHPAD\"; echo \"=== net.log ($(wc -l < $SD/net.log) lines) ===\"; grep -iE \"recraft|generate|poll|image|png|jpg|jpeg|webp|canvas\" \"$SD/net.log\" | tail -60; echo; echo \"=== bodies ===\"; ls -la \"$SD/bodies\" 2>/dev/null | head -40)",
+      "Shell(grep:*)",
+      "Shell(sed:*)",
+      "Shell(awk:*)",
+      "Shell(pkill -f probe_recraft.py 2>/dev/null; sleep 1; pgrep -af probe_recraft.py || echo \"probe not running\")",
+      "Shell(./imagegen-cli:*)",
+      "Shell(pgrep:*)",
+      "Shell(.venv/bin/ruff:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

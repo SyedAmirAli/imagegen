@@ -250,7 +250,7 @@ class Runner:
             item["attempts"] = item.get("attempts", 0) + 1
             try:
                 result = self.backend.generate(job)
-                saved = postprocess.save_png(
+                saved = postprocess.save_image(
                     result.data,
                     job.output,
                     size=job.size,

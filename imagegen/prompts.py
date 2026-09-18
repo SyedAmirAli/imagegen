@@ -127,12 +127,19 @@ def slug_output_path(rel_path: Path) -> str:
     return "/".join(parts + [f"{slugify(rel_path.stem)}.png"])
 
 
-def check_output_path(rel_output: str) -> list[str]:
+def check_output_path(rel_output: str, *, allow_any_format: bool = False) -> list[str]:
     """Validate an author-supplied `output:`. Returns warnings; raises on unsafe.
 
     Traversal is rejected rather than normalised: an `output:` of `../x.png`
     writes outside the output folder, which silently scatters images across the
     filesystem and puts them where a resume will never find them again.
+
+    By default every image is written as PNG regardless of what `output:` asks
+    for, so a non-`.png` suffix here is almost always an author's mistake — an
+    unmet `.jpg` expectation is a much louder failure caught at load time than
+    a batch of images silently landing under the wrong extension. Pass
+    `allow_any_format=True` (`--allow-any-format` on the CLI) to instead save
+    each image in the format its own extension asks for.
     """
     if Path(rel_output).is_absolute() or rel_output.startswith("~"):
         raise PromptError(f"output must be a relative path, got {rel_output!r}")
@@ -145,10 +152,18 @@ def check_output_path(rel_output: str) -> list[str]:
         raise PromptError(f"output is not a file path: {rel_output!r}")
 
     suffix = PurePosixPath(rel_output).suffix.lower()
-    if suffix and suffix != ".png":
+    if suffix and not allow_any_format and suffix != ".png":
         raise PromptError(
-            f"output must be a .png file (every image is written as PNG), got {rel_output!r}"
+            f"output must be a .png file (every image is written as PNG), got {rel_output!r} "
+            f"— pass --allow-any-format to save each image in its own requested format"
         )
+    if suffix and allow_any_format:
+        from . import postprocess
+        if suffix not in postprocess.WRITABLE_EXTENSIONS:
+            raise PromptError(
+                f"{suffix!r} is not a format imagegen can write, got {rel_output!r} "
+                f"(supported: {', '.join(sorted(postprocess.WRITABLE_EXTENSIONS))})"
+            )
 
     warnings = []
     name = PurePosixPath(rel_output).name
@@ -267,7 +282,8 @@ def load_config(root: Path) -> dict:
     return {}
 
 
-def parse_file(path: Path, root: Path, out_root: Path, defaults: dict) -> Job:
+def parse_file(path: Path, root: Path, out_root: Path, defaults: dict,
+               *, allow_any_format: bool = False) -> Job:
     text = path.read_text(encoding="utf-8")
     m = FRONT_MATTER_RE.match(text)
     if m:
@@ -292,7 +308,7 @@ def parse_file(path: Path, root: Path, out_root: Path, defaults: dict) -> Job:
     if rel_output:
         if not PurePosixPath(rel_output).suffix:
             rel_output += ".png"        # `01-logo/symbol` is an obvious intent
-        warnings += check_output_path(rel_output)
+        warnings += check_output_path(rel_output, allow_any_format=allow_any_format)
     else:
         rel_output = slug_output_path(path.relative_to(root))
 
@@ -335,17 +351,19 @@ def is_manifest(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() == ".json"
 
 
-def load_source(path: Path, out_root: Path) -> tuple[list[Job], list[tuple[Path, str]]]:
+def load_source(path: Path, out_root: Path,
+                 *, allow_any_format: bool = False) -> tuple[list[Job], list[tuple[Path, str]]]:
     """Load prompts from either a folder of Markdown files or a JSON manifest."""
     from . import manifest   # imported here: manifest builds on this module
 
     path = path.expanduser().resolve()
     if is_manifest(path):
-        return manifest.parse(path, out_root)
-    return load_folder(path, out_root)
+        return manifest.parse(path, out_root, allow_any_format=allow_any_format)
+    return load_folder(path, out_root, allow_any_format=allow_any_format)
 
 
-def load_folder(root: Path, out_root: Path) -> tuple[list[Job], list[tuple[Path, str]]]:
+def load_folder(root: Path, out_root: Path,
+                 *, allow_any_format: bool = False) -> tuple[list[Job], list[tuple[Path, str]]]:
     """Return (jobs, errors) for every prompt file under `root`, path-sorted."""
     root = root.resolve()
     if not root.is_dir():
@@ -374,7 +392,7 @@ def load_folder(root: Path, out_root: Path) -> tuple[list[Job], list[tuple[Path,
     seen_out: dict[str, Path] = {}
     for path in files:
         try:
-            job = parse_file(path, root, out_root, defaults)
+            job = parse_file(path, root, out_root, defaults, allow_any_format=allow_any_format)
         except (PromptError, yaml.YAMLError) as exc:
             errors.append((path, str(exc)))
             continue

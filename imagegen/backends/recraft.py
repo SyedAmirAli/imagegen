@@ -38,6 +38,7 @@ DEFAULT_CDP = "http://127.0.0.1:9223"
 PROJECTS_URL = "https://www.recraft.ai/projects"
 SUBMIT_PATH = "queue_recraft/prompt_to_image"
 POLL_PATH = "poll_recraft"
+IMAGE_HOST = "img.recraft.ai"
 
 PROMPT_FIELD = '[data-testid="generation-panel-prompt-field"]'
 GENERATE_BUTTON = '[data-testid="generation-panel-generate-button"]'
@@ -81,6 +82,12 @@ def snap_aspect(requested: str | None) -> str | None:
     return min(ASPECT_LABELS, key=lambda k: abs(_ratio_value(k) - want))
 
 
+def _describe_poll_body(body: bytes, content_type: str) -> str:
+    """A short, log-safe summary of a poll_recraft reply that is not multipart."""
+    snippet = body[:200].decode("utf-8", "replace").replace("\n", " ")
+    return f"{content_type or 'no content-type'}: {snippet}"
+
+
 def _parse_multipart(body: bytes, content_type: str) -> tuple[dict, dict[str, tuple[str, bytes]]]:
     """Split poll_recraft's multipart body into (manifest, {image_id: (content_type, bytes)})."""
     m = re.search(r'boundary="?([^";]+)"?', content_type or "")
@@ -102,6 +109,40 @@ def _parse_multipart(body: bytes, content_type: str) -> tuple[dict, dict[str, tu
         elif name:
             images[name] = (ctype, data)
     return manifest, images
+
+
+def _parse_poll(body: bytes, content_type: str) -> tuple[dict, dict[str, tuple[str, bytes]]]:
+    """Read a poll_recraft reply, whichever of its two shapes it arrives in.
+
+    Recraft answers a finished job one of two ways, and has switched between
+    them: an older multipart body carrying the manifest plus the image bytes
+    inline, and a plain JSON body that is the manifest alone. Only the first
+    has pixels in it; when the reply is JSON the browser fetches the bytes
+    separately from img.recraft.ai, so the caller waits for that instead.
+    """
+    if "multipart/" in (content_type or "").lower():
+        return _parse_multipart(body, content_type)
+    try:
+        manifest = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise BackendError(
+            f"poll_recraft reply was neither multipart nor JSON "
+            f"({content_type!r}): {_describe_poll_body(body, content_type)}"
+        )
+    if not isinstance(manifest, dict):
+        raise BackendError("poll_recraft JSON reply was not an object")
+    return manifest, {}
+
+
+def _image_id_from_url(url: str) -> str | None:
+    """Pull the image id out of an img.recraft.ai delivery URL.
+
+    The path is `<signed token>/<transform>/plain/abs://prod/images/<id>`, e.g.
+    .../raw:1/plain/abs://prod/images/856c5546-... — and a resized variant may
+    tack `@avif`/`@png` onto the id.
+    """
+    m = re.search(r"abs://prod/images/([\w-]+)", url or "")
+    return m.group(1) if m else None
 
 
 class RecraftBackend(Backend):
@@ -144,6 +185,9 @@ class RecraftBackend(Backend):
         self._page = None
         self._submissions: dict[str, dict] = {}   # prompt (normalised) -> {operation_id, at}
         self._poll_bodies: dict[str, tuple[bytes, str]] = {}   # operation_id -> (body, content_type)
+        # image_id -> (content_type, bytes, is_raw). The page pulls the pixels
+        # from img.recraft.ai itself once the poll reports the job's image ids.
+        self._image_bodies: dict[str, tuple[str, bytes, bool]] = {}
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -305,16 +349,16 @@ class RecraftBackend(Backend):
     def _on_response(self, response) -> None:
         """Capture Recraft's own generation traffic as it happens.
 
-        Two responses matter, both read passively rather than replayed
+        Three responses matter, all read passively rather than replayed
         ourselves: the queue_recraft response pairs 1:1 with the request that
         produced it (via response.request), so there is no ambiguity about
         whose operationId this is even with several prompts in flight. The
         poll_recraft response cannot be replayed ourselves at all — Recraft's
         SPA attaches an auth token to its own fetch() calls that a bare
         page.request.get() never sees, so a self-issued poll gets HTTP 401.
-        The page always issues exactly one poll_recraft call per submission
-        itself (a server-side blocking long-poll, not client-side retries),
-        so waiting for that one response is both necessary and sufficient.
+        Those two only name the job and its image ids; the pixels come last,
+        from a signed img.recraft.ai URL the browser fetches once the poll
+        reports the job done, so that response is where the bytes are read.
         """
         url = response.url or ""
         if SUBMIT_PATH in url:
@@ -341,6 +385,22 @@ class RecraftBackend(Backend):
             except Exception:
                 return
             self._poll_bodies[m.group(1)] = (body, response.headers.get("content-type", ""))
+        elif IMAGE_HOST in url:
+            image_id = _image_id_from_url(url)
+            if not image_id or not response.ok:
+                return
+            # The page fetches the original first and resized/format variants
+            # after; keep the original, since a variant may be cropped or lossy.
+            raw = "/raw:1/" in url
+            held = self._image_bodies.get(image_id)
+            if held is not None and held[2] and not raw:
+                return
+            try:
+                body = response.body()
+            except Exception:
+                return
+            self._image_bodies[image_id] = (
+                response.headers.get("content-type", ""), body, raw)
 
     @staticmethod
     def _normalise(text: str) -> str:
@@ -408,7 +468,16 @@ class RecraftBackend(Backend):
         option = menu.get_by_text(name, exact=True).first
         if not option.count():
             vendor = name.split()[0]
-            category = menu.get_by_role("menuitem", name=vendor, exact=True).first
+            # The vendor row itself carries no text-matchable label: its
+            # accessible name is "<vendor>\n<currently-selected variant>"
+            # (e.g. "Recraft\nRecraft V4.1"), which also happens to be a
+            # substring match of the unrelated top-level "Recraft V4.1"
+            # model row — a plain text/role-name lookup grabs that row
+            # instead and never opens the flyout. The vendor row's inner
+            # div does carry a stable, vendor-specific test id though.
+            category = menu.locator(
+                f'[data-testid="dropdown-models-list-sub-group-{vendor.lower()}"]'
+            ).locator('xpath=ancestor::*[@role="menuitem"][1]').first
             if category.count():
                 category.click()
                 page.wait_for_timeout(300)
@@ -507,6 +576,9 @@ class RecraftBackend(Backend):
 
     def _submit_and_wait(self, prompt: str) -> tuple[dict, dict[str, tuple[str, bytes]]]:
         """Click Generate, then wait for Recraft's OWN poll_recraft response."""
+        # Each job's image ids are unique, so anything captured before this
+        # click belongs to an earlier generation and would only pile up.
+        self._image_bodies.clear()
         key = self._normalise(prompt)
         self._submissions.pop(key, None)
         submitted_at = time.time()
@@ -531,25 +603,73 @@ class RecraftBackend(Backend):
         operation_id = submission["operation_id"]
         self._poll_bodies.pop(operation_id, None)
         deadline = submitted_at + self.args.recraft_gen_timeout
+        manifest: dict | None = None
+        wanted: list[str] = []          # image ids the finished manifest named
+        pending = ""
+        noted = False
         while time.time() < deadline:
-            self.report("rendering", None)
+            self.report("downloading" if wanted else "rendering", None)
             cached = self._poll_bodies.pop(operation_id, None)
             if cached is not None:
                 body, content_type = cached
-                manifest, images = _parse_multipart(body, content_type)
+                manifest, images = _parse_poll(body, content_type)
                 if images:
                     return manifest, images
+                wanted = [entry["image_id"] for entry in manifest.get("images", [])]
+                if not wanted:
+                    # A poll that names no image is a progress reply, not the
+                    # finished one; keep waiting rather than aborting a job
+                    # that is about to succeed (and burning the retry's credits).
+                    pending = _describe_poll_body(body, content_type)
+                    if not noted:
+                        log(f"   poll_recraft replied in flight — still rendering ({pending})")
+                        noted = True
+            for image_id in wanted:
+                held = self._image_bodies.pop(image_id, None)
+                if held is not None:
+                    return manifest, {image_id: (held[0], held[1])}
             self._page.wait_for_timeout(int(self.args.recraft_poll_interval * 1000))
         raise BackendError(
             f"image not finished after {self.args.recraft_gen_timeout}s "
-            f"(Recraft's own poll_recraft call for operation {operation_id} never completed)"
+            f"(operation {operation_id})"
+            + (f"; the manifest named {wanted} but its image bytes never arrived"
+               if wanted else f"; last poll reply: {pending}" if pending else "")
         )
+
+    def _dismiss_layer_selection(self) -> None:
+        """Deselect any canvas layer left selected from a prior generation.
+
+        Recraft auto-selects the image it just finished rendering. While
+        something is selected, the whole left panel is covered by an
+        invisible "Apply settings from the selected layer" button that
+        swallows every click meant for the model/aspect/batch-size
+        controls underneath it — those clicks silently "apply settings"
+        instead of opening anything, which then hangs waiting for a menu
+        that never appears. Escape drops the selection and the overlay
+        with it.
+        """
+        page = self._page
+        if page.get_by_role(
+            "button", name="Apply settings from the selected layer"
+        ).count():
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
 
     # -- Backend API -------------------------------------------------------
 
     def generate(self, job) -> GenerationResult:
         if self._page is None:
             raise FatalBackendError("backend is not open")
+
+        from playwright.sync_api import Error as PWError
+
+        try:
+            return self._generate(job)
+        except PWError as exc:
+            raise BackendError(str(exc)) from exc
+
+    def _generate(self, job) -> GenerationResult:
+        self._dismiss_layer_selection()
 
         if self.args.recraft_model:
             self._set_model(self.args.recraft_model)
@@ -579,12 +699,11 @@ class RecraftBackend(Backend):
         self.report("typing prompt", None)
         self._set_prompt(prompt)
 
-        manifest, images = self._submit_and_wait(prompt)
-        image_ids = [entry["image_id"] for entry in manifest.get("images", [])]
-        if not image_ids or image_ids[0] not in images:
-            raise BackendError("poll_recraft manifest and image parts do not match")
-
-        content_type, data = images[image_ids[0]]
+        _manifest, images = self._submit_and_wait(prompt)
+        if not images:
+            raise BackendError("Recraft finished without delivering image bytes")
+        image_id = next(iter(images))
+        content_type, data = images[image_id]
         self.report("downloading", 1.0)
-        return GenerationResult(data=data, provider_image_id=image_ids[0],
+        return GenerationResult(data=data, provider_image_id=image_id,
                                 content_type=content_type)
