@@ -1,8 +1,10 @@
 # Taste
 - Wants the agent to commit autonomously at the end of a task: stage everything (`git add *`), write a detailed commit message, and push to the current branch without asking for confirmation. Confidence: 0.7
+- "Stage all" means literally everything — no curating or excluding files (e.g. committing even local agent/tooling dirs like `.commandcode/` with absolute paths and notes) rather than gitignoring them, even when the agent recommends excluding. Confidence: 0.55
 - Wants changes done on a freshly checked-out branch rather than directly on the current one — wants a new branch created before editing or deleting code/files (not just before destructive changes). Confidence: 0.8
 - When sharing commands, wants the full, copy-paste-ready invocation including all setup steps (`cd` into the project, activate the venv, etc.) so it runs cleanly in a fresh terminal session without further edits. Confidence: 0.6
 - Prefers CLIs to auto-detect connection/configuration parameters (e.g. CDP URL/port) instead of requiring the user to pass them explicitly. Confidence: 0.55
+- Expects a browser-session flag (e.g. `--chrome-profile`) to actually determine which signed-in Chrome/account is used — passing a profile should attach to that session, not silently attach to a different already-running browser. Confidence: 0.5
 - Prefers tools that accept an explicit, user-defined output directory so generated artifacts land in an exact known location. Confidence: 0.55
 - Prefers the tool to manage the browser session itself (auto-launch/open a new window when one doesn't exist) rather than requiring the user to start it manually; actively asks for this behavior. Confidence: 0.6
 - Dislikes silent skips in batch runs — every item should be processed; validation failures should be surfaced or overridable with a flag rather than quietly dropping items. Confidence: 0.6
