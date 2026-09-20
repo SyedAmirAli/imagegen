@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, UnidentifiedImageError
 
 # A pixel is "see-through" below this alpha; 250 rather than 255 tolerates the
 # near-opaque values lossy encoders leave behind on a genuinely transparent edge.
@@ -299,6 +299,45 @@ def strip_background(im: Image.Image) -> tuple[Image.Image, str]:
 # save
 # ---------------------------------------------------------------------------
 
+def _describe_bytes(raw: bytes) -> str:
+    """Say what arrived instead of an image.
+
+    "cannot identify image file <BytesIO object at 0x…>" names the buffer and
+    nothing about its contents, which leaves no way to tell an empty response
+    from an error page from a format Pillow was not built for. The magic bytes
+    settle it in one line, and the retry that follows costs a generation.
+    """
+    if not raw:
+        return "the response body was empty (0 bytes)"
+
+    head = raw[:16]
+    known = [
+        (b"\x89PNG", "PNG"),
+        (b"\xff\xd8\xff", "JPEG"),
+        (b"GIF8", "GIF"),
+        (b"RIFF", "WebP"),
+        (b"<?xml", "XML or SVG"),
+        (b"<svg", "SVG"),
+        (b"<!DOCTYPE", "an HTML page"),
+        (b"<html", "an HTML page"),
+        (b"{", "JSON"),
+        (b"[", "JSON"),
+    ]
+    for magic, label in known:
+        if raw.startswith(magic):
+            what = label
+            break
+    else:
+        # ISO-BMFF (AVIF, HEIC) puts its brand at offset 4, after the box size.
+        what = f"brand {raw[8:12]!r}" if raw[4:8] == b"ftyp" else "an unrecognised format"
+
+    detail = f"{len(raw)} bytes of {what}, starting {head!r}"
+    if what in ("an HTML page", "JSON", "XML or SVG", "SVG"):
+        snippet = raw[:200].decode("utf-8", "replace").replace("\n", " ").strip()
+        detail += f" — {snippet}"
+    return detail
+
+
 def save_image(
     raw: bytes,
     dest: Path,
@@ -308,8 +347,13 @@ def save_image(
     allow_upscale: bool = False,
     max_file_bytes: int | None = None,
 ) -> Result:
-    im = Image.open(io.BytesIO(raw))
-    im.load()
+    try:
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+    except UnidentifiedImageError as exc:
+        raise UnidentifiedImageError(
+            f"the image data could not be read: {_describe_bytes(raw)}"
+        ) from exc
     src_size = im.size
     notes: list[str] = []
 
