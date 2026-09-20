@@ -163,7 +163,12 @@ class RecraftBackend(Backend):
                             "on first run and print its URL for reuse)")
         g.add_argument("--recraft-model", default=None,
                        help="model to select in the Model picker, matched by visible "
-                            "name, e.g. 'Recraft V4.1' (default: leave as Auto)")
+                            "name, e.g. 'Recraft V4.1' (default: leave as Auto). "
+                            "Selected once when the run starts, not per image")
+        g.add_argument("--recraft-model-wait", type=int, default=30, metavar="SECONDS",
+                       help="when --recraft-model is not in the picker, how long to wait "
+                            "for one to be chosen by hand before carrying on with "
+                            "whatever is selected (default: 30s, 0 to skip)")
         g.add_argument("--recraft-chrome-binary", default=None,
                        help="Chrome executable (default: autodetect)")
         g.add_argument("--recraft-chrome-profile", default=str(Path.home() / ".chrome-imagegen-recraft"),
@@ -226,6 +231,7 @@ class RecraftBackend(Backend):
             self._set_batch_size(1)   # a project may default to x2+; we only ever want one
         except BackendError as exc:
             log(f"   warning: {exc} — generations may cost extra credits per image")
+        self._select_model_once()
         self._extract_project_id(self._page.url)   # asserts we're in a project, or raises
         if not self.args.recraft_project_url:
             log(f"   FIRST RUN: created {self._page.url} — pass it as "
@@ -489,6 +495,54 @@ class RecraftBackend(Backend):
         option.click()
         page.wait_for_timeout(300)
 
+    def _current_model(self) -> str:
+        """Whatever the Model picker is showing now, for reporting."""
+        try:
+            label = self._page.locator(MODEL_TRIGGER).first.inner_text() or ""
+        except Exception:
+            return ""
+        return " ".join(label.split())
+
+    def _select_model_once(self) -> None:
+        """Pick the model once, as the run opens.
+
+        This used to run before every single image. The model does not change
+        between them, so that was a picker opened and closed a thousand times
+        over a batch — and when the name was not in the list it raised, which
+        failed every image in turn rather than the run once.
+
+        A name that is not there is now a warning and a pause: the picker is
+        left open for a while so it can be chosen by hand, and the run carries
+        on with whatever is selected once that time is up.
+        """
+        name = self.args.recraft_model
+        if not name:
+            return
+
+        try:
+            self._set_model(name)
+            log(f"   model set to {name!r}")
+            return
+        except BackendError as exc:
+            log(f"   warning: {exc}")
+
+        wait = max(0, int(self.args.recraft_model_wait))
+        if wait:
+            log(f"   pick a model by hand in the browser within {wait}s — "
+                f"the run continues on its own after that")
+            before = self._current_model()
+            deadline = time.time() + wait
+            while time.time() < deadline:
+                self._page.wait_for_timeout(1000)
+                current = self._current_model()
+                if current and current != before:
+                    log(f"   model picked by hand: {current}")
+                    return
+
+        current = self._current_model()
+        log(f"   continuing with the model already selected"
+            + (f": {current}" if current else ""))
+
     def _set_negative(self, text: str) -> bool:
         """Use Recraft's own "Negative prompt" field when it's on screen.
 
@@ -670,9 +724,6 @@ class RecraftBackend(Backend):
 
     def _generate(self, job) -> GenerationResult:
         self._dismiss_layer_selection()
-
-        if self.args.recraft_model:
-            self._set_model(self.args.recraft_model)
 
         prompt = job.prompt
         if job.negative:
