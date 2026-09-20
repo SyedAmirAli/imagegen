@@ -25,7 +25,6 @@ once per project.
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 import time
@@ -421,44 +420,42 @@ class RecraftBackend(Backend):
                 response.headers.get("content-type", ""), body, raw, url)
 
     def _refetch_image(self, url: str) -> bytes:
-        """Pull the pixels down again from inside the page.
+        """Pull the pixels down again when the browser kept none.
 
         `response.body()` is the cheap way to get them and usually works, but
         it is not a promise: it asks Chromium for a body Chromium has already
         finished with. A decoded image is exactly the kind of resource the
         network stack stops holding, and when it has, CDP answers with an
-        empty body rather than an error — which arrives here as zero bytes
-        that no amount of retrying will turn into an image.
+        empty body rather than an error — zero bytes that no amount of
+        retrying turns into an image, while each retry spends a generation.
 
-        Re-fetching inside the page rather than with page.request.get() keeps
-        the page's origin, cookies and headers, and the delivery URL is signed
-        anyway. The second request is normally served from the browser's own
-        cache, so this costs a copy through the debugging protocol and not
-        another download — and never another generation.
+        The request is issued through the context's own fetch rather than the
+        page's. A fetch() inside the page is a cross-origin request from
+        recraft.ai to img.recraft.ai, and a tag that loads an image needs no
+        permission for that while a script reading its bytes does — which is
+        why the page-side attempt failed with a bare "Failed to fetch".
+        page.request carries the context's cookies but is not the page, so no
+        CORS check applies, and the delivery URL is signed anyway.
         """
-        result = self._page.evaluate(
-            """async (url) => {
-                const response = await fetch(url, { credentials: 'include' })
-                if (!response.ok) return { status: response.status }
-                const bytes = new Uint8Array(await response.arrayBuffer())
-                // Chunked, because apply() on a megabyte-long argument list
-                // overflows the call stack.
-                let binary = ''
-                const step = 0x8000
-                for (let i = 0; i < bytes.length; i += step) {
-                    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step))
-                }
-                return { data: btoa(binary) }
-            }""",
-            url,
-        )
-        if not isinstance(result, dict) or "data" not in result:
-            status = (result or {}).get("status") if isinstance(result, dict) else None
+        try:
+            response = self._page.request.get(url)
+        except Exception as exc:
             raise BackendError(
-                "the image bytes were not retained by the browser and re-fetching them "
-                + (f"returned HTTP {status}" if status else "failed")
+                "the image bytes were not retained by the browser and re-fetching "
+                f"them failed: {exc}"
+            ) from exc
+        if not response.ok:
+            raise BackendError(
+                "the image bytes were not retained by the browser and re-fetching "
+                f"them returned HTTP {response.status}"
             )
-        return base64.b64decode(result["data"])
+        body = response.body()
+        if not body:
+            raise BackendError(
+                "the image bytes were not retained by the browser and re-fetching "
+                "them returned an empty body"
+            )
+        return body
 
     @staticmethod
     def _normalise(text: str) -> str:
