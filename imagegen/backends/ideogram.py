@@ -104,6 +104,7 @@ class IdeogramBackend(Backend):
         self._generated = 0
         self._requests: dict[str, dict] = {}
         self._last_submit_status: int | None = None
+        self._launched = False   # did this run start the browser itself?
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -117,6 +118,7 @@ class IdeogramBackend(Backend):
                     "and --no-launch-chrome was given"
                 )
             self._launch_chrome()
+            self._launched = True
 
         self._pw = sync_playwright().start()
         try:
@@ -132,7 +134,14 @@ class IdeogramBackend(Backend):
 
         if "ideogram.ai" not in (page.url or ""):
             page.goto(self.args.ideogram_url, wait_until="domcontentloaded")
-        page.set_viewport_size({"width": 1600, "height": 1000})
+        # Only size a browser we started. Overriding the viewport sets a device
+        # metrics emulation that outlives the call, so against a browser owned
+        # by something else — a window the user is watching, a view embedded in
+        # an app — the page renders at a size that has nothing to do with the
+        # space it is shown in: the bottom is clipped and there is no page
+        # overflow left to scroll.
+        if self._launched:
+            page.set_viewport_size({"width": 1600, "height": 1000})
         page.bring_to_front()
         page.on("response", self._on_response)
         self._await_editor(timeout=45_000)

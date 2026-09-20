@@ -193,6 +193,7 @@ class RecraftBackend(Backend):
         # image_id -> (content_type, bytes, is_raw). The page pulls the pixels
         # from img.recraft.ai itself once the poll reports the job's image ids.
         self._image_bodies: dict[str, tuple[str, bytes, bool]] = {}
+        self._launched = False   # did this run start the browser itself?
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -206,6 +207,7 @@ class RecraftBackend(Backend):
                     "and --recraft-no-launch-chrome was given"
                 )
             self._launch_chrome()
+            self._launched = True
 
         self._pw = sync_playwright().start()
         try:
@@ -222,7 +224,14 @@ class RecraftBackend(Backend):
         target = self.args.recraft_project_url or PROJECTS_URL
         if target not in (page.url or ""):
             page.goto(target, wait_until="domcontentloaded")
-        page.set_viewport_size({"width": 1600, "height": 1000})
+        # Only size a browser we started. Overriding the viewport sets a device
+        # metrics emulation that outlives the call, so against a browser owned
+        # by something else — a window the user is watching, a view embedded in
+        # an app — the page renders at a size that has nothing to do with the
+        # space it is shown in: the bottom is clipped and there is no page
+        # overflow left to scroll.
+        if self._launched:
+            page.set_viewport_size({"width": 1600, "height": 1000})
         page.bring_to_front()
         page.on("response", self._on_response)
 
