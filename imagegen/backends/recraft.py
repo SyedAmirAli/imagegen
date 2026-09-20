@@ -25,6 +25,7 @@ once per project.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -190,9 +191,9 @@ class RecraftBackend(Backend):
         self._page = None
         self._submissions: dict[str, dict] = {}   # prompt (normalised) -> {operation_id, at}
         self._poll_bodies: dict[str, tuple[bytes, str]] = {}   # operation_id -> (body, content_type)
-        # image_id -> (content_type, bytes, is_raw). The page pulls the pixels
+        # image_id -> (content_type, bytes, is_raw, url). The page pulls the pixels
         # from img.recraft.ai itself once the poll reports the job's image ids.
-        self._image_bodies: dict[str, tuple[str, bytes, bool]] = {}
+        self._image_bodies: dict[str, tuple[str, bytes, bool, str]] = {}
         self._launched = False   # did this run start the browser itself?
 
     # -- lifecycle ---------------------------------------------------------
@@ -413,9 +414,51 @@ class RecraftBackend(Backend):
             try:
                 body = response.body()
             except Exception:
-                return
+                # Kept anyway, with no bytes: the URL is the useful part, and
+                # an empty entry is what triggers the refetch below.
+                body = b""
             self._image_bodies[image_id] = (
-                response.headers.get("content-type", ""), body, raw)
+                response.headers.get("content-type", ""), body, raw, url)
+
+    def _refetch_image(self, url: str) -> bytes:
+        """Pull the pixels down again from inside the page.
+
+        `response.body()` is the cheap way to get them and usually works, but
+        it is not a promise: it asks Chromium for a body Chromium has already
+        finished with. A decoded image is exactly the kind of resource the
+        network stack stops holding, and when it has, CDP answers with an
+        empty body rather than an error — which arrives here as zero bytes
+        that no amount of retrying will turn into an image.
+
+        Re-fetching inside the page rather than with page.request.get() keeps
+        the page's origin, cookies and headers, and the delivery URL is signed
+        anyway. The second request is normally served from the browser's own
+        cache, so this costs a copy through the debugging protocol and not
+        another download — and never another generation.
+        """
+        result = self._page.evaluate(
+            """async (url) => {
+                const response = await fetch(url, { credentials: 'include' })
+                if (!response.ok) return { status: response.status }
+                const bytes = new Uint8Array(await response.arrayBuffer())
+                // Chunked, because apply() on a megabyte-long argument list
+                // overflows the call stack.
+                let binary = ''
+                const step = 0x8000
+                for (let i = 0; i < bytes.length; i += step) {
+                    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step))
+                }
+                return { data: btoa(binary) }
+            }""",
+            url,
+        )
+        if not isinstance(result, dict) or "data" not in result:
+            status = (result or {}).get("status") if isinstance(result, dict) else None
+            raise BackendError(
+                "the image bytes were not retained by the browser and re-fetching them "
+                + (f"returned HTTP {status}" if status else "failed")
+            )
+        return base64.b64decode(result["data"])
 
     @staticmethod
     def _normalise(text: str) -> str:
@@ -689,8 +732,12 @@ class RecraftBackend(Backend):
                         noted = True
             for image_id in wanted:
                 held = self._image_bodies.pop(image_id, None)
-                if held is not None:
-                    return manifest, {image_id: (held[0], held[1])}
+                if held is None:
+                    continue
+                content_type, body, _raw, url = held
+                if not body:
+                    body = self._refetch_image(url)
+                return manifest, {image_id: (content_type, body)}
             self._page.wait_for_timeout(int(self.args.recraft_poll_interval * 1000))
         raise BackendError(
             f"image not finished after {self.args.recraft_gen_timeout}s "
