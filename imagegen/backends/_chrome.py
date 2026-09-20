@@ -124,3 +124,45 @@ def launch_chrome(binary: str, profile: Path, cdp_url: str, start_url: str) -> N
         if cdp_alive(cdp_url):
             return
     raise RuntimeError(f"Chrome did not expose {cdp_url} within 40s")
+
+
+def find_marked_page(browser, domain: str, marker: str | None):
+    """Pick the page this run owns, out of every context the browser has.
+
+    `browser.contexts[0]` is only ever right when the browser has one profile
+    in it. An app that embeds several — a browser profile per account, each
+    with its own cookies and its own logged-in identity — exposes each of them
+    as a separate context over the debugging protocol, and which one comes
+    first is not ours to decide. Taking pages from it means a second run can
+    attach to the page a first run is already driving: it navigates that page
+    away mid-batch and generates into the wrong account's project. The visible
+    half of that is two automations clicking in one document, which surfaces as
+    elements detaching under the click.
+
+    So the caller may hand us a marker — `name=value` of a cookie the embedder
+    set on the domain, in that profile's session only. Cookies are per profile
+    and survive the site navigating itself, which a URL or a window variable
+    does not.
+
+    Returns None when nothing matches, so the caller can say so in its own
+    words. With no marker the old behaviour stands: the first page on the
+    domain, which is correct for a browser holding a single profile.
+    """
+    pages = [
+        page
+        for context in (browser.contexts or [])
+        for page in context.pages
+        if domain in (page.url or "")
+    ]
+    if marker is None:
+        return pages[0] if pages else None
+
+    for page in pages:
+        try:
+            cookies = page.evaluate("() => document.cookie") or ""
+        except Exception:
+            # A page that will not answer is not the one we are looking for.
+            continue
+        if marker in cookies:
+            return page
+    return None

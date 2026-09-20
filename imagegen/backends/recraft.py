@@ -157,6 +157,10 @@ class RecraftBackend(Backend):
         g = parser.add_argument_group("recraft backend")
         g.add_argument("--recraft-cdp-url", default=DEFAULT_CDP,
                        help=f"Chrome DevTools endpoint (default: {DEFAULT_CDP})")
+        g.add_argument("--recraft-page-cookie", default=None, metavar="NAME=VALUE",
+                       help="attach to the page whose profile carries this cookie, "
+                            "instead of the first page on recraft.ai. Lets several "
+                            "runs share one browser, each driving its own profile.")
         g.add_argument("--recraft-project-url", default=None,
                        help="a specific project to reuse, e.g. "
                             "https://www.recraft.ai/project/<id> (default: create one "
@@ -215,9 +219,17 @@ class RecraftBackend(Backend):
         except Exception as exc:
             raise FatalBackendError(f"cannot attach to Chrome at {self.args.recraft_cdp_url}: {exc}") from exc
 
-        ctx = self._browser.contexts[0] if self._browser.contexts else self._browser.new_context()
-        page = next((p for p in ctx.pages if "recraft.ai" in (p.url or "")), None)
+        marker = self.args.recraft_page_cookie
+        page = _chrome.find_marked_page(self._browser, "recraft.ai", marker)
         if page is None:
+            if marker:
+                raise FatalBackendError(
+                    f"no page on recraft.ai carries the cookie {marker}. The browser this "
+                    "run was told to drive is not open on Recraft, or is signed into a "
+                    "different profile than the one that set the cookie."
+                )
+            ctx = (self._browser.contexts[0] if self._browser.contexts
+                   else self._browser.new_context())
             page = ctx.new_page()
         self._page = page
 
