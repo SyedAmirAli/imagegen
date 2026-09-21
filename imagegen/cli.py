@@ -730,11 +730,13 @@ def build_parser() -> argparse.ArgumentParser:
                             "on top of --min-gap/--max-gap (e.g. --delay 1:5 waits an extra 5s "
                             "after every image; --delay 5:30 waits 30s after every 5th)")
     p_run.add_argument("--after-item-fail-pause", type=float, default=0.0, metavar="SECONDS",
-                       help="after giving up on an image, wait this many seconds before the "
-                            "next one (0 = off; hosts like Sarathi pass 30 with a rotate hook)")
+                       help="after giving up on an image, wait this many seconds, recover the "
+                            "page, then retry the same id until it succeeds (0 = off; hosts "
+                            "like Sarathi pass 30)")
     p_run.add_argument("--after-item-fail-rotate-url", default=None, metavar="URL",
                        help="POST this URL after giving up on an image (before the pause), "
-                            "so a host can rotate the browser proxy exit IP")
+                            "so a host can rotate the browser proxy exit IP; also enables "
+                            "retry-until-pass for that id")
     p_run.add_argument("--dry-run", action="store_true",
                        help="show what would be generated and exit")
     for cls in backends.BACKENDS.values():

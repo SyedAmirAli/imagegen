@@ -630,7 +630,10 @@ Every decision is recorded per item in `progress.json` and printed as a `note:`.
   run. `--no-reconcile` opts out of both directions.
 - **Failures are kept, not lost.** An item that fails all its attempts is marked
   `failed` with its error and a screenshot in `.imagegen/debug/`. Re-queue them
-  with `--retry-failed`.
+  with `--retry-failed`. With `--after-item-fail-pause` (or a rotate URL) the
+  same item is **not** left failed: the run pauses, optionally asks a host to
+  rotate the proxy IP, recovers the page, and retries that id until it
+  succeeds or you interrupt — see [§10](#after-a-full-give-up-pause--rotate--retry).
 - **Editing a prompt does not silently regenerate it.** The tool hashes each
   prompt; `status` reports which ones changed since they were generated, and
   `--redo-changed` re-queues exactly those.
@@ -677,6 +680,8 @@ log. Force either way with `--color always|never`.
 ./imagegen-cli run ~/batches/from-1-100.json ~/batches/from-101-200.json
 ```
 
+#### Shared `run` flags
+
 | Flag | Default | Purpose |
 |---|---|---|
 | `-o, --out DIR` | manifest's `output_dir`, else `<source>/output` | where images are written; with several sources that want different folders, each keeps its own structure as a subfolder of this one |
@@ -688,34 +693,75 @@ log. Force either way with `--color always|never`.
 | `--redo-changed` | off | re-queue done items whose prompt was edited |
 | `--no-reconcile` | off | do not adopt images already on disk as done |
 | `--flat` | off | write every image directly into the output folder, no category subfolders (§7) |
+| `--allow-any-format` | off | honour each item's `output:` extension (`.jpg`, `.webp`, …) instead of requiring `.png` |
 | `--force-background-removal` | off | cut out the background when one is really there (§8) |
 | `--max-file-size KB` | off | compress images over this size, keeping resolution; bare flag means 1200 KB |
 | `--allow-upscale` | off | resize up to `size:` instead of keeping native resolution |
-| `--max-attempts N` | 3 | tries per image |
-| `--retry-backoff S` | 5.0 | seconds × attempt to wait before retrying |
-| `--min-gap` / `--max-gap` | 4 / 9 | random pause between generations, in seconds |
+| `--max-attempts N` | 3 | tries per image before a give-up |
+| `--retry-backoff S` | 5.0 | seconds × attempt to wait before the next try inside one give-up cycle |
+| `--min-gap` / `--max-gap` | 4 / 9 | random pause between *successful* generations, in seconds |
+| `--delay COUNT:SECONDS` | off | extra pause of `SECONDS` after every `COUNT` successful generations (on top of min/max gap). Example: `--delay 1:5` waits 5s after every image; `--delay 5:30` waits 30s after every 5th |
+| `--after-item-fail-pause SECONDS` | `0` (off) | after a full give-up on one id, wait this many seconds, recover the page, then **retry the same id** until it succeeds (or you interrupt). Hosts like Sarathi pass `30` |
+| `--after-item-fail-rotate-url URL` | off | `POST` this URL after a give-up (before the pause) so a host can rotate the browser's proxy exit IP. Implies the same retry-until-pass behaviour as a non-zero pause |
 | `--dry-run` | off | print what would be generated and exit, writing nothing |
 | `--color` | `auto` | `auto`, `always` or `never` for colour and the live status line |
 | `--state PATH` | `.imagegen/progress.json` | override the state file location |
 
-Ideogram backend flags: `--cdp-url` (default `http://127.0.0.1:9222`),
-`--ideogram-url`, `--chrome-binary`, `--chrome-profile` (default
-`~/.chrome-imagegen`), `--no-launch-chrome`, `--gen-timeout` (420s),
-`--accept-timeout` (90s), `--poll-interval` (3s), `--reload-every` (25).
+#### After a full give-up: pause / rotate / retry
 
-Recraft backend flags: `--recraft-cdp-url` (default `http://127.0.0.1:9223` — a
-different port from Ideogram's so both can run at once), `--recraft-project-url`
-(reuse a specific project; default: create one on first run and print its URL
-for reuse), `--recraft-model` (select a model by its visible name, e.g. `"Recraft
-V4.1"`; default: leave as Auto), `--recraft-chrome-binary`, `--recraft-chrome-profile`
-(default `~/.chrome-imagegen-recraft`), `--recraft-no-launch-chrome`,
-`--recraft-gen-timeout` (300s), `--recraft-poll-interval` (3s),
-`--recraft-max-prompt-chars` (trim prompts to this many characters, at a word
-boundary, before typing them in; default: off, send prompts as-is — Recraft's
-own field silently truncates around 1000 characters once a concrete model
-like `"Recraft V3"` is selected, so pass this if you hit that).
+Without the after-fail flags, exhausting `--max-attempts` marks the item
+`failed` and the batch moves on (re-queue later with `--retry-failed`).
 
-Mock backend flags: `--mock-fail-rate`, `--mock-transparent`.
+With `--after-item-fail-pause` and/or `--after-item-fail-rotate-url`:
+
+1. Log `gave up on <id> — will rotate/pause and retry`
+2. If a rotate URL is set → `POST` it (short timeout; a failure is a warning, not a stop)
+3. If pause &gt; 0 → wait that many seconds (status line shows `after-fail pause`)
+4. Reload/recover the page
+5. Start a **new** attempt cycle on the **same** id
+6. Repeat until the image succeeds, or `Ctrl-C` / a fatal error stops the run
+
+Bare CLI defaults leave both flags off so behaviour stays unchanged for scripts
+that do not opt in.
+
+#### Ideogram backend flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--cdp-url` | `http://127.0.0.1:9222` | Chrome DevTools endpoint |
+| `--page-cookie NAME=VALUE` | — | attach to the page whose profile carries this cookie, instead of the first Ideogram tab (several runs can share one browser) |
+| `--ideogram-url` | Ideogram home | page to open/return to between generations |
+| `--chrome-binary` | autodetect | Chrome executable |
+| `--chrome-profile` | `~/.chrome-imagegen` | dedicated profile directory (must not be the default Chrome profile) |
+| `--no-launch-chrome` | off | fail instead of starting Chrome when the CDP port is dead (attach-only hosts) |
+| `--gen-timeout` | 420s | seconds to wait for one image |
+| `--accept-timeout` | 90s | seconds to wait for Ideogram to register a submit |
+| `--poll-interval` | 3s | seconds between finished-image checks |
+| `--reload-every` | 25 | reload the tab every N generations (`0` = never) |
+
+#### Recraft backend flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--recraft-cdp-url` | `http://127.0.0.1:9223` | Chrome DevTools endpoint (different port from Ideogram so both can run at once) |
+| `--recraft-page-cookie NAME=VALUE` | — | same idea as `--page-cookie`, for Recraft tabs in a shared browser |
+| `--recraft-project-url` | create on first run | reuse a project, e.g. `https://www.recraft.ai/project/<id>`; without it the backend creates one and prints the URL |
+| `--recraft-model` | leave as Auto | select a model by visible picker name, e.g. `"Recraft V4.1"` (once at run start, not per image) |
+| `--recraft-model-wait` | 30s | if the named model is not in the picker, wait this long for a manual choice (`0` to skip) |
+| `--recraft-chrome-binary` | autodetect | Chrome executable |
+| `--recraft-chrome-profile` | `~/.chrome-imagegen-recraft` | dedicated profile directory |
+| `--recraft-no-launch-chrome` | off | attach-only: do not start Chrome if CDP is down |
+| `--recraft-gen-timeout` | 300s | seconds to wait for one image after submit |
+| `--recraft-poll-interval` | 3s | seconds between `poll_recraft` retries |
+| `--recraft-max-prompt-chars` | off | trim prompts to this many characters at a word boundary before typing (Recraft's UI can silently truncate ~1000 chars once a concrete model is selected) |
+
+#### Mock backend flags
+
+| Flag | Purpose |
+|---|---|
+| `--mock-fail-rate` | probability (0–1) that a mock generation raises |
+| `--mock-delay` | seconds to fake-render (for watching the progress line) |
+| `--mock-transparent` | emit an image that already has an alpha cut-out |
 
 ### `status <prompt-folder>`
 
@@ -761,6 +807,22 @@ rm ~/my-images/output/02-portraits/founder.png
 # pick up everything that failed overnight
 ./imagegen-cli run ~/my-images --retry-failed
 
+# pace a long Recraft batch: extra 30s after every 5 successes
+./imagegen-cli run batch.json --backend recraft --flat \
+    --recraft-model "Recraft V4.1" \
+    --recraft-project-url https://www.recraft.ai/project/<id> \
+    --delay 5:30
+
+# attach to a host-owned browser (e.g. Sarathi): do not launch Chrome,
+# pin the tab via page cookie, pause+rotate on give-up then retry the same id
+./imagegen-cli run batch.json --backend recraft --flat \
+    --recraft-no-launch-chrome \
+    --recraft-cdp-url http://127.0.0.1:9412 \
+    --recraft-page-cookie sarathi_page=<workflow-id> \
+    --recraft-model "Recraft V4.1" \
+    --after-item-fail-pause 30 \
+    --after-item-fail-rotate-url 'http://127.0.0.1:PORT/rotate?token=…'
+
 # exercise the whole pipeline without spending a single generation
 ./imagegen-cli run ~/my-images --backend mock --mock-fail-rate 0.3
 ```
@@ -799,6 +861,12 @@ on. To reuse a profile that is already signed in:
 ```
 
 Keep the Chrome window open for the whole batch — closing it ends the run.
+
+**Attach-only hosts** (for example Sarathi) already own the browser. Pass
+`--no-launch-chrome` / `--recraft-no-launch-chrome` and point `--cdp-url` /
+`--recraft-cdp-url` at that app's DevTools port. When several signed-in profiles
+share one CDP endpoint, pin the run to its tab with `--page-cookie` /
+`--recraft-page-cookie` (`NAME=VALUE` that the host set on that profile).
 
 Recraft also needs a **project** open (its canvas board), not just a signed-in
 session — a fresh account has none. First run creates one and prints its URL;
@@ -873,9 +941,12 @@ automation window, confirm the generator page loads, then rerun. Or point
 instance is probably holding the profile directory. Close that Chrome window, or
 use a different `--chrome-profile`.
 
-**"Ideogram never registered the request"** — the generate click did not produce
-a submission. Usually credits, a rate limit, or a UI change. Check
-`.imagegen/debug/<id>_a1.png`.
+**"Ideogram never registered the request"** / **"Recraft never registered the
+request within 30s of pressing generate"** — the generate click did not produce
+a submission. Usually credits, a rate limit ("too many requests"), or a UI
+change. Check `.imagegen/debug/<id>_a1.png`. With `--after-item-fail-pause` the
+run will wait and retry the same id; add `--after-item-fail-rotate-url` (or a
+system VPN) if the limit is IP-based.
 
 **"Ideogram rejected the generation (HTTP …)"** — the account hit a quota or rate
 limit. Wait, then `--retry-failed`.
@@ -886,6 +957,10 @@ changed its composer layout. The selectors live at the top of
 
 **"this Chrome profile is not signed in to Recraft"** — sign in inside the
 automation window, confirm a project opens, then rerun.
+
+**"rotate hook failed"** — the `--after-item-fail-rotate-url` POST did not
+succeed (host down, bad token, or no proxies configured there). The pause and
+page recover still run; only the IP change was skipped.
 
 **"could not set batch size to x1" (warning, not fatal)** — a freshly created
 Recraft project's settings controls can take a few seconds to finish hydrating
