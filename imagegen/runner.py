@@ -246,77 +246,108 @@ class Runner:
             log(" " * (len(f"[{index}/{total}]") + 1) + tail.lstrip())
         item_started = time.time()
 
-        for attempt in range(1, self.opts.max_attempts + 1):
-            if self._stop:
-                return
-            item["attempts"] = item.get("attempts", 0) + 1
-            try:
-                result = self.backend.generate(job)
-                saved = postprocess.save_image(
-                    result.data,
-                    job.output,
-                    size=job.size,
-                    # The prompt stays the source of truth: a file that
-                    # explicitly asks for an opaque background is never stripped.
-                    force_background_removal=(
-                        self.opts.force_background_removal and not job.forbids_transparency
-                    ),
-                    allow_upscale=self.opts.allow_upscale,
-                    max_file_bytes=self.opts.max_file_bytes,
-                )
-                self.progress.mark_done(
-                    job.id,
-                    provider_image_id=result.provider_image_id,
-                    notes=saved.notes,
-                )
-                self.stats.generated += 1
-                self._done += 1
-                self.clock.record(time.time() - item_started)
-                alpha = ("transparent", ui.C.CYAN) if saved.transparent else ("opaque", ui.C.YELLOW)
-                log("  " + ui.paint("✓", ui.C.GREEN, ui.C.BOLD)
-                    + f"  {saved.out_size[0]}x{saved.out_size[1]}"
-                    + f"  {ui.paint(alpha[0], alpha[1])}"
-                    + f"  {ui.paint(ui.size_bytes(saved.bytes_written), ui.C.GREY)}"
-                    + f"  {ui.paint(ui.duration(time.time() - item_started), ui.C.GREY)}")
-                for note in saved.notes:
-                    log("  " + ui.paint(f"· {note}", ui.C.GREY))
-                self._stage = ""
-                self._render()
-                return
-
-            except FatalBackendError as exc:
-                self.progress.mark_failed(job.id, f"fatal: {exc}")
-                self.progress.save()
-                self.stats.fatal = str(exc)
-                log(f"!! {exc}", err=True)
-                raise Stop from exc
-
-            except (BackendError, OSError, ValueError, RuntimeError) as exc:
-                msg = f"{type(exc).__name__}: {exc}"
-                # Playwright puts the actionability reason at the END of its call
-                # log, so truncating the message hides the actual cause.
-                log("  " + ui.paint("⚠", ui.C.YELLOW, ui.C.BOLD)
-                    + ui.paint(f"  attempt {attempt}/{self.opts.max_attempts} failed — ", ui.C.YELLOW)
-                    + msg)
-                item["error"] = msg[:4000]
-                shot = self.opts.debug_dir / f"{_safe(job.id)}_a{attempt}.png"
-                if self.backend.snapshot(shot):
-                    log("  " + ui.paint(f"· screenshot: {shot}", ui.C.GREY))
-                if attempt == self.opts.max_attempts:
-                    self.progress.mark_failed(job.id, msg)
-                    self.stats.failed += 1
+        # When a host asks for an after-fail pause/rotate, one exhausted attempt
+        # set is not the end of this job: rotate, wait, then try the same id
+        # again until it succeeds or the run is stopped.
+        while not self._stop:
+            gave_up = False
+            for attempt in range(1, self.opts.max_attempts + 1):
+                if self._stop:
+                    break
+                item["attempts"] = item.get("attempts", 0) + 1
+                try:
+                    result = self.backend.generate(job)
+                    saved = postprocess.save_image(
+                        result.data,
+                        job.output,
+                        size=job.size,
+                        # The prompt stays the source of truth: a file that
+                        # explicitly asks for an opaque background is never stripped.
+                        force_background_removal=(
+                            self.opts.force_background_removal and not job.forbids_transparency
+                        ),
+                        allow_upscale=self.opts.allow_upscale,
+                        max_file_bytes=self.opts.max_file_bytes,
+                    )
+                    self.progress.mark_done(
+                        job.id,
+                        provider_image_id=result.provider_image_id,
+                        notes=saved.notes,
+                    )
+                    self.stats.generated += 1
                     self._done += 1
-                    log("  " + ui.paint("✗", ui.C.RED, ui.C.BOLD)
-                        + ui.paint(f"  gave up on {job.id}", ui.C.RED))
-                    self._after_item_gave_up()
-                else:
-                    time.sleep(self.opts.retry_backoff * attempt)
-                    self.backend.recover()
-            finally:
+                    self.clock.record(time.time() - item_started)
+                    alpha = ("transparent", ui.C.CYAN) if saved.transparent else ("opaque", ui.C.YELLOW)
+                    log("  " + ui.paint("✓", ui.C.GREEN, ui.C.BOLD)
+                        + f"  {saved.out_size[0]}x{saved.out_size[1]}"
+                        + f"  {ui.paint(alpha[0], alpha[1])}"
+                        + f"  {ui.paint(ui.size_bytes(saved.bytes_written), ui.C.GREY)}"
+                        + f"  {ui.paint(ui.duration(time.time() - item_started), ui.C.GREY)}")
+                    for note in saved.notes:
+                        log("  " + ui.paint(f"· {note}", ui.C.GREY))
+                    self._stage = ""
+                    self._render()
+                    return
+
+                except FatalBackendError as exc:
+                    self.progress.mark_failed(job.id, f"fatal: {exc}")
+                    self.progress.save()
+                    self.stats.fatal = str(exc)
+                    log(f"!! {exc}", err=True)
+                    raise Stop from exc
+
+                except (BackendError, OSError, ValueError, RuntimeError) as exc:
+                    msg = f"{type(exc).__name__}: {exc}"
+                    # Playwright puts the actionability reason at the END of its call
+                    # log, so truncating the message hides the actual cause.
+                    log("  " + ui.paint("⚠", ui.C.YELLOW, ui.C.BOLD)
+                        + ui.paint(f"  attempt {attempt}/{self.opts.max_attempts} failed — ", ui.C.YELLOW)
+                        + msg)
+                    item["error"] = msg[:4000]
+                    shot = self.opts.debug_dir / f"{_safe(job.id)}_a{attempt}.png"
+                    if self.backend.snapshot(shot):
+                        log("  " + ui.paint(f"· screenshot: {shot}", ui.C.GREY))
+                    if attempt == self.opts.max_attempts:
+                        gave_up = True
+                        log("  " + ui.paint("✗", ui.C.RED, ui.C.BOLD)
+                            + ui.paint(f"  gave up on {job.id}", ui.C.RED)
+                            + (ui.paint(" — will rotate/pause and retry", ui.C.GREY)
+                               if self._retries_after_fail() else ""))
+                        self._after_item_gave_up()
+                    else:
+                        time.sleep(self.opts.retry_backoff * attempt)
+                        self.backend.recover()
+                finally:
+                    self.progress.save()
+
+            if self._stop:
+                # Interrupted mid-item: record the failure so resume can see it.
+                self.progress.mark_failed(job.id, item.get("error") or "interrupted")
+                self.stats.failed += 1
+                self._done += 1
                 self.progress.save()
+                return
+
+            if not gave_up:
+                return
+
+            if not self._retries_after_fail():
+                # Bare CLI: one exhausted set is permanent; move on to the next id.
+                self.progress.mark_failed(job.id, item.get("error") or "gave up")
+                self.stats.failed += 1
+                self._done += 1
+                self.progress.save()
+                return
+
+            log("  " + ui.paint(f"· retrying {job.id} after rotate/pause…", ui.C.GREY))
+
+    def _retries_after_fail(self) -> bool:
+        pause = float(getattr(self.opts, "after_item_fail_pause", 0) or 0)
+        rotate_url = getattr(self.opts, "after_item_fail_rotate_url", None) or None
+        return pause > 0 or bool(rotate_url)
 
     def _after_item_gave_up(self) -> None:
-        """Optional rotate hook + pause + page recover before the next item.
+        """Rotate hook + pause + page recover before retrying or the next item.
 
         Used by hosts (Sarathi) that own the browser proxy: they expose a
         localhost URL to cycle the exit IP, then we wait and reload so the
@@ -330,7 +361,7 @@ class Runner:
             return
 
         if rotate_url:
-            log("  " + ui.paint("· rotating proxy before next item…", ui.C.GREY))
+            log("  " + ui.paint("· rotating proxy before retry…", ui.C.GREY))
             try:
                 req = urllib.request.Request(rotate_url, method="POST", data=b"")
                 with urllib.request.urlopen(req, timeout=15) as resp:
@@ -339,6 +370,8 @@ class Runner:
                     log("  " + ui.paint(f"· rotate: {body[:200]}", ui.C.GREY))
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 log("  " + ui.paint(f"· rotate hook failed — {exc}", ui.C.YELLOW))
+        else:
+            log("  " + ui.paint("· no rotate URL — pause only (add proxies in Sarathi to change IP)", ui.C.YELLOW))
 
         if pause > 0 and not self._stop:
             self._wait(pause, label="after-fail pause")
