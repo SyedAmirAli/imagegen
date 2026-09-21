@@ -10,6 +10,8 @@ import os
 import random
 import signal
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -306,11 +308,46 @@ class Runner:
                     self._done += 1
                     log("  " + ui.paint("✗", ui.C.RED, ui.C.BOLD)
                         + ui.paint(f"  gave up on {job.id}", ui.C.RED))
+                    self._after_item_gave_up()
                 else:
                     time.sleep(self.opts.retry_backoff * attempt)
                     self.backend.recover()
             finally:
                 self.progress.save()
+
+    def _after_item_gave_up(self) -> None:
+        """Optional rotate hook + pause + page recover before the next item.
+
+        Used by hosts (Sarathi) that own the browser proxy: they expose a
+        localhost URL to cycle the exit IP, then we wait and reload so the
+        next generation does not keep a stale page on the old route.
+        """
+        if self._stop:
+            return
+        rotate_url = getattr(self.opts, "after_item_fail_rotate_url", None) or None
+        pause = float(getattr(self.opts, "after_item_fail_pause", 0) or 0)
+        if not rotate_url and pause <= 0:
+            return
+
+        if rotate_url:
+            log("  " + ui.paint("· rotating proxy before next item…", ui.C.GREY))
+            try:
+                req = urllib.request.Request(rotate_url, method="POST", data=b"")
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    body = resp.read().decode("utf-8", errors="replace").strip()
+                if body:
+                    log("  " + ui.paint(f"· rotate: {body[:200]}", ui.C.GREY))
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                log("  " + ui.paint(f"· rotate hook failed — {exc}", ui.C.YELLOW))
+
+        if pause > 0 and not self._stop:
+            self._wait(pause, label="after-fail pause")
+
+        if not self._stop:
+            log("  " + ui.paint("· recovering page after give-up…", ui.C.GREY))
+            self.backend.recover()
+        self._stage = ""
+        self._render()
 
 
 def _now() -> str:

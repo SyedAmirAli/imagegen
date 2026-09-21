@@ -487,6 +487,8 @@ def cmd_run(args) -> int:
         allow_upscale=args.allow_upscale,
         max_file_bytes=args.max_file_size * 1024 if args.max_file_size else None,
         debug_dir=paths.debug,
+        after_item_fail_pause=args.after_item_fail_pause,
+        after_item_fail_rotate_url=args.after_item_fail_rotate_url or None,
     )
 
     with RunLock(paths.lock):
@@ -727,6 +729,12 @@ def build_parser() -> argparse.ArgumentParser:
                        help="extra pause of SECONDS after every COUNT successful generations, "
                             "on top of --min-gap/--max-gap (e.g. --delay 1:5 waits an extra 5s "
                             "after every image; --delay 5:30 waits 30s after every 5th)")
+    p_run.add_argument("--after-item-fail-pause", type=float, default=0.0, metavar="SECONDS",
+                       help="after giving up on an image, wait this many seconds before the "
+                            "next one (0 = off; hosts like Sarathi pass 30 with a rotate hook)")
+    p_run.add_argument("--after-item-fail-rotate-url", default=None, metavar="URL",
+                       help="POST this URL after giving up on an image (before the pause), "
+                            "so a host can rotate the browser proxy exit IP")
     p_run.add_argument("--dry-run", action="store_true",
                        help="show what would be generated and exit")
     for cls in backends.BACKENDS.values():
