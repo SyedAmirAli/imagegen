@@ -15,7 +15,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import postprocess
+from . import metadata, postprocess
 from .backends import BackendError, FatalBackendError
 from . import ui
 from .logging_utils import log
@@ -268,6 +268,7 @@ class Runner:
                         ),
                         allow_upscale=self.opts.allow_upscale,
                         max_file_bytes=self.opts.max_file_bytes,
+                        metadata=metadata.from_job_extra(job.extra),
                     )
                     self.progress.mark_done(
                         job.id,

@@ -142,6 +142,14 @@ def _entry_output(entry: dict, fallback_id: str) -> str:
     return f"{folder}/{filename}" if folder else filename
 
 
+def _entry_extra(entry: dict, known: set[str], default_meta: dict | None) -> dict:
+    extra = {k: v for k, v in entry.items() if k not in known}
+    if default_meta:
+        own = extra.get("meta")
+        extra["meta"] = {**default_meta, **(own if isinstance(own, dict) else {})}
+    return extra
+
+
 def parse(path: Path, out_root: Path, *, defaults: dict | None = None,
           allow_any_format: bool = False):
     """Return (jobs, errors) for a manifest file."""
@@ -152,6 +160,10 @@ def parse(path: Path, out_root: Path, *, defaults: dict | None = None,
     merged_defaults = {k: v for k, v in (top.get("defaults") or {}).items()
                        if k in DEFAULT_KEYS}
     merged_defaults.update(defaults or {})
+    # `defaults.meta` (e.g. one author for the whole batch) is merged under
+    # each entry's own `meta`, which wins field by field.
+    default_meta = (top.get("defaults") or {}).get("meta")
+    default_meta = default_meta if isinstance(default_meta, dict) else None
 
     out_root = out_root.resolve()
     jobs: list[Job] = []
@@ -211,7 +223,7 @@ def parse(path: Path, out_root: Path, *, defaults: dict | None = None,
                 size=size,
                 aspect=aspect or None,
                 background=_entry_background(entry, merged_defaults.get("background")),
-                extra={k: v for k, v in entry.items() if k not in known},
+                extra=_entry_extra(entry, known, default_meta),
             ))
         except (PromptError, ValueError, TypeError) as exc:
             errors.append((Path(label), str(exc)))

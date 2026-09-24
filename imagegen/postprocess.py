@@ -24,6 +24,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, UnidentifiedImageError
 
+from .metadata import embed as embed_metadata
+
 # A pixel is "see-through" below this alpha; 250 rather than 255 tolerates the
 # near-opaque values lossy encoders leave behind on a genuinely transparent edge.
 ALPHA_OPAQUE_CUTOFF = 250
@@ -346,6 +348,7 @@ def save_image(
     force_background_removal: bool,
     allow_upscale: bool = False,
     max_file_bytes: int | None = None,
+    metadata: dict | None = None,
 ) -> Result:
     try:
         im = Image.open(io.BytesIO(raw))
@@ -400,6 +403,12 @@ def save_image(
 
     if max_file_bytes:
         note = compress_to_limit(dest, max_file_bytes, fmt)
+        if note:
+            notes.append(note)
+
+    # Last, so no later save can drop it: compression above re-writes the file.
+    if metadata:
+        note = embed_metadata(dest, metadata)
         if note:
             notes.append(note)
 
