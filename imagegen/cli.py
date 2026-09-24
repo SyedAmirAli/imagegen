@@ -14,7 +14,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
-from . import __version__, backends, manifest, prompts, ui
+from . import __version__, backends, manifest, metadata, prompts, ui
 from .logging_utils import attach_file, log, rule
 from .progress import Progress
 from .prompts import PromptError
@@ -371,18 +371,19 @@ def cmd_embed_metadata(args) -> int:
     `<out>/upscale/` are updated too. Holds the run lock, so it never races a
     batch writing into the same folder.
     """
-    from . import metadata
-
     paths = _paths(args)
     jobs = _select(_load(paths), args)
     upscale_dir = paths.out_dir / UPSCALE_DIRNAME
     counts = {"embedded": 0, "missing": 0, "no_meta": 0, "failed": 0}
+    skip = metadata.parse_skip(args.metadata_skip)
 
     log(f"embed-metadata  ·  {_sources_line(paths)}")
     log(f"output   {paths.out_dir}")
+    if skip:
+        log(f"skipping {', '.join(skip)}")
     with RunLock(paths.lock):
         for job in jobs:
-            meta = metadata.from_job_extra(job.extra)
+            meta = metadata.from_job_extra(job.extra, skip)
             if not meta:
                 counts["no_meta"] += 1
                 continue
@@ -509,6 +510,12 @@ def cmd_run(args) -> int:
     if args.max_file_size:
         log(ui.paint(f"compressing any image over {args.max_file_size}KB "
                      "(resolution preserved)", ui.C.GREY))
+    if args.embed_metadata:
+        skip = metadata.parse_skip(args.metadata_skip)
+        with_meta = sum(1 for j in jobs if metadata.from_job_extra(j.extra, skip))
+        log(ui.paint(f"embedding metadata into each saved image that has `meta` "
+                     f"({with_meta}/{len(jobs)} do)"
+                     + (f", skipping {', '.join(skip)}" if skip else ""), ui.C.GREY))
     if args.force_background_removal:
         log("background removal is FORCED for every prompt that does not ask for an "
             "opaque background (images that already have alpha are left untouched)")
@@ -539,6 +546,8 @@ def cmd_run(args) -> int:
         force_background_removal=args.force_background_removal,
         allow_upscale=args.allow_upscale,
         max_file_bytes=args.max_file_size * 1024 if args.max_file_size else None,
+        embed_metadata=args.embed_metadata,
+        metadata_skip=metadata.parse_skip(args.metadata_skip),
         debug_dir=paths.debug,
         after_item_fail_pause=args.after_item_fail_pause,
         after_item_fail_rotate_url=args.after_item_fail_rotate_url or None,
@@ -769,6 +778,12 @@ def build_parser() -> argparse.ArgumentParser:
                        metavar="KB",
                        help="compress any image larger than this many KB, keeping its "
                             "resolution (bare flag = 1200 KB)")
+    p_run.add_argument("--embed-metadata", action="store_true",
+                       help="write each image's manifest `meta` (title, description, author, "
+                            "keywords) into the saved file as XMP, after any compression")
+    p_run.add_argument("--metadata-skip", action="append", default=[], metavar="KEYS",
+                       help="comma-separated `meta` keys to leave out of the file "
+                            "(e.g. prompt,model); repeatable")
     p_run.add_argument("--allow-upscale", action="store_true",
                        help="resize up to the requested size instead of keeping native")
     p_run.add_argument("--max-attempts", type=int, default=3, help="tries per image (default: 3)")
@@ -818,6 +833,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="only this id (repeatable)")
     p_meta.add_argument("--match", action="append", default=[], metavar="GLOB",
                         help="only ids / sources matching this glob (repeatable)")
+    p_meta.add_argument("--metadata-skip", action="append", default=[], metavar="KEYS",
+                        help="comma-separated `meta` keys to leave out of the file "
+                             "(e.g. prompt,model); repeatable")
     p_meta.add_argument("-v", "--verbose", action="store_true",
                         help="print a line for every file updated")
     p_meta.set_defaults(func=cmd_embed_metadata)

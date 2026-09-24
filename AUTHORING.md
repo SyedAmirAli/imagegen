@@ -48,7 +48,21 @@ If you cannot, output it as a single fenced ```json block I can save.
       "id": "01-001-founder-portrait",
       "output": "01-portraits/founder-portrait.png",
       "aspect": "3:4",
-      "prompt": "Studio portrait of a smiling woman in her thirties wearing a navy blazer, three-quarter view, soft key light from the left, gentle rim light, subject fully isolated on a completely transparent background, no backdrop, no ground shadow, no scenery."
+      "prompt": "Studio portrait of a smiling woman in her thirties wearing a navy blazer, three-quarter view, soft key light from the left, gentle rim light, subject fully isolated on a completely transparent background, no backdrop, no ground shadow, no scenery.",
+      "meta": {
+        "author": "Jane Doe",
+        "copyright": "© 2026 Jane Doe. All rights reserved.",
+        "title": "Smiling businesswoman in a navy blazer isolated on a transparent background",
+        "description": "Studio portrait of a smiling woman in her thirties wearing a navy blazer, lit with soft key light and a gentle rim light, fully cut out on a transparent background for websites, presentations and ads.",
+        "tags": ["businesswoman", "woman", "portrait", "smiling", "navy blazer", "business attire", "professional", "corporate", "business", "studio portrait", "three quarter view", "isolated", "transparent background", "cut out", "people"],
+        "category": "People",
+        "adobe_category_id": 13,
+        "ai_generated": true,
+        "fictional_people_property": true,
+        "model": "Ideogram",
+        "prompt": "Studio portrait of a smiling woman in her thirties wearing a navy blazer, three-quarter view, soft key light from the left, gentle rim light, subject fully isolated on a completely transparent background, no backdrop, no ground shadow, no scenery. crisp clean edges, photorealistic, high detail.",
+        "file_type": "png"
+      }
     },
     {
       "id": "02-001-team-wide",
@@ -82,12 +96,54 @@ If you cannot, output it as a single fenced ```json block I can save.
 | `size` | `"WIDTHxHEIGHT"`. Omit entirely if you have no specific requirement; the generator's native resolution is usually best. It only ever downscales. |
 | `background` | `"transparent"` or `"opaque"`. Omit when it does not matter. This is metadata, **not** an instruction to the model — you must also say it in the prompt text. |
 | `negative` | Things to avoid, comma separated. Optional; inherits from `defaults`. |
+| `meta` | Stock metadata written into the saved file (see "Stock metadata" below). Never sent to the generator. Include it whenever the images are meant for stock upload. |
 
 Order the `images` array in the order they should be generated.
 
-### If the batch is too large for one reply
+### Stock metadata (`meta`)
 
-Split it into numbered files — `from-1-100.json`, `from-101-200.json` and so on
+Each entry may carry a `meta` object. `imagegen` writes it into the image itself
+as XMP (plus PNG text keywords), the form Adobe Stock, Lightroom, Bridge and
+exiftool read, so the file keeps its title and keywords wherever it goes:
+
+```bash
+./imagegen-cli run ~/batch.json --embed-metadata       # embed while generating
+./imagegen-cli embed-metadata ~/batch.json             # embed into images already made
+```
+
+| Field | Rule |
+|---|---|
+| `author` | The creator's name exactly as I give it. Ask me if I did not give one; never guess. Written as `dc:creator`. |
+| `copyright` | Copyright notice, e.g. `"© 2026 Jane Doe. All rights reserved."`. Written as `dc:rights`. |
+| `title` | **At most 100 characters.** One line, sentence case, no trailing period: main subject plus what sets this image apart. Unique across the batch. |
+| `description` | **At most 600 characters.** One to three plain sentences: what is shown, notable details, what it suits. |
+| `tags` | **At least 15** unique lowercase keywords, one to three words each, most important first (Adobe weighs the first 10 most). |
+| `category` | Adobe Stock category name: Animals, Buildings and Architecture, Business, Drinks, The Environment, States of Mind, Food, Graphic Resources, Hobbies and Leisure, Industry, Landscapes, Lifestyle, People, Plants and Flowers, Culture and Religion, Science, Social Issues, Sports, Technology, Transport, Travel. |
+| `adobe_category_id` | That category's number, 1–21 in the order listed above. |
+| `ai_generated` | `true` for generated images. Stock sites require AI content to be marked. |
+| `fictional_people_property` | `true` when the image shows people or recognisable property (buildings, vehicles, products) that are generated; otherwise `false`. |
+| `model` | The generator used, e.g. `"Ideogram"`. |
+| `prompt` | The full prompt as sent (entry prompt plus prefix/suffix). Freepik's upload CSV asks for it. |
+| `file_type` | Format for upload: `"png"` for transparent images, `"jpg"` for opaque ones. |
+
+Rules for writing it:
+
+- Describe the image, not the prompt: state only what the image will show; never
+  invent age, ethnicity, emotion, location or brand the prompt does not fix.
+- No prompt jargon (`photorealistic`, `8k`, `render`), no brand names,
+  trademarks, real people's names or copyrighted characters.
+- Plain English text: no emojis, hashtags, HTML or line breaks.
+- Build each entry's `meta` from the same parts as its prompt, so titles and tags
+  always match that image. Never reuse one generic title or tag list.
+- Fields shared by every image (`author`, `copyright`, `model`, `ai_generated`)
+  may go once in `defaults.meta`; each entry's own `meta` wins field by field.
+  Repeating them per entry is also fine.
+
+### One file for the whole batch
+
+Keep the entire batch in **one JSON file**, even at 1,000+ images: write it
+with a script if a reply cannot hold it. Split only if you truly cannot produce
+one file, into numbered files — `from-1-100.json`, `from-101-200.json` and so on
 — each a complete, valid manifest with the **same `output_dir`**. They are run
 together as one batch:
 
@@ -95,8 +151,8 @@ together as one batch:
 imagegen-cli run ./from-*.json
 ```
 
-Ids and `output` paths must be unique across *all* the files, not just within
-one. `defaults` are per-file, so each chunk carries its own shared wording.
+Ids, `output` paths and `meta.title` must be unique across *all* the files,
+not just within one. `defaults` are per-file, so each chunk carries its own shared wording.
 
 ## Writing the prompt text
 
@@ -151,6 +207,10 @@ The same field rules apply, plus:
   leading `/`.
 - `output_dir` is set.
 - Every prompt reads as a complete standalone description.
+- Every prompt is unique — no two identical or near-identical prompts.
+- If the batch is for stock: every entry has `meta` with the author I named, a
+  title of at most 100 characters, a description of at most 600, at least 15
+  unique tags, and the category, AI, model, prompt and file-type fields.
 - Valid JSON — no trailing commas, no comments, all strings double-quoted.
 - Tell me the total number of images, so I know what the batch will cost.
 

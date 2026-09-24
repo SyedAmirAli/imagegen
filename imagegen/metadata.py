@@ -52,15 +52,28 @@ class MetadataError(ValueError):
     pass
 
 
-def from_job_extra(extra: dict | None) -> dict | None:
-    """The `meta` object of a job, when it has one."""
+def from_job_extra(extra: dict | None, skip=()) -> dict | None:
+    """The `meta` object of a job, when it has one.
+
+    `skip` names manifest `meta` keys (as written in the manifest: "prompt",
+    "tags", …) to leave out entirely — `--metadata-skip`.
+    """
     if not isinstance(extra, dict):
         return None
+    skip = {s.strip().lower() for s in skip if s and s.strip()}
     for key in ("meta", "metadata"):
         value = extra.get(key)
         if isinstance(value, dict):
-            return normalise(value)
+            return normalise({k: v for k, v in value.items() if str(k).lower() not in skip})
     return None
+
+
+def parse_skip(values) -> list[str]:
+    """`--metadata-skip a,b --metadata-skip c` -> ["a", "b", "c"]."""
+    out: list[str] = []
+    for value in values or []:
+        out += [part.strip() for part in str(value).split(",") if part.strip()]
+    return out
 
 
 def normalise(meta: dict | None) -> dict | None:
@@ -107,7 +120,9 @@ def normalise(meta: dict | None) -> dict | None:
     for key, value in {**nested, **meta}.items():
         if key in used or key == "extra" or not _XML_NAME.match(str(key)):
             continue
-        if isinstance(value, (str, int, float, bool)) and str(value).strip():
+        if isinstance(value, bool):
+            extra[str(key)] = "true" if value else "false"
+        elif isinstance(value, (str, int, float)) and str(value).strip():
             extra[str(key)] = str(value).strip()
     if extra:
         out["extra"] = extra

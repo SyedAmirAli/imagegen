@@ -268,7 +268,9 @@ class Runner:
                         ),
                         allow_upscale=self.opts.allow_upscale,
                         max_file_bytes=self.opts.max_file_bytes,
-                        metadata=metadata.from_job_extra(job.extra),
+                        metadata=(metadata.from_job_extra(
+                                      job.extra, getattr(self.opts, "metadata_skip", ()))
+                                  if getattr(self.opts, "embed_metadata", False) else None),
                     )
                     self.progress.mark_done(
                         job.id,
