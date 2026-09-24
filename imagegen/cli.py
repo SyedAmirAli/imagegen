@@ -357,6 +357,17 @@ def cmd_validate(args) -> int:
     return 1 if errors else 0
 
 
+def _run_model(args) -> str | None:
+    """The model a run was told to use — the only model metadata records.
+
+    Only Recraft has a model picker. Nothing chosen means nothing recorded:
+    a manifest's own `meta.model` is never used (see metadata.from_job_extra).
+    """
+    if getattr(args, "backend", None) == "recraft":
+        return (getattr(args, "recraft_model", None) or "").strip() or None
+    return None
+
+
 # Where a host (Sarathi) writes upscaled copies: <out>/upscale/<stem>.<ext>.
 UPSCALE_DIRNAME = "upscale"
 UPSCALE_EXTENSIONS = (".png", ".jpg", ".webp")
@@ -376,14 +387,16 @@ def cmd_embed_metadata(args) -> int:
     upscale_dir = paths.out_dir / UPSCALE_DIRNAME
     counts = {"embedded": 0, "missing": 0, "no_meta": 0, "failed": 0}
     skip = metadata.parse_skip(args.metadata_skip)
+    model = (args.metadata_model or "").strip() or None
 
     log(f"embed-metadata  ·  {_sources_line(paths)}")
     log(f"output   {paths.out_dir}")
     if skip:
         log(f"skipping {', '.join(skip)}")
+    log(f"model    {model}" if model else "model    none chosen — no model is written")
     with RunLock(paths.lock):
         for job in jobs:
-            meta = metadata.from_job_extra(job.extra, skip)
+            meta = metadata.from_job_extra(job.extra, skip, model)
             if not meta:
                 counts["no_meta"] += 1
                 continue
@@ -512,9 +525,11 @@ def cmd_run(args) -> int:
                      "(resolution preserved)", ui.C.GREY))
     if args.embed_metadata:
         skip = metadata.parse_skip(args.metadata_skip)
-        with_meta = sum(1 for j in jobs if metadata.from_job_extra(j.extra, skip))
+        model = _run_model(args)
+        with_meta = sum(1 for j in jobs if metadata.from_job_extra(j.extra, skip, model))
         log(ui.paint(f"embedding metadata into each saved image that has `meta` "
                      f"({with_meta}/{len(jobs)} do)"
+                     + (f", model {model!r}" if model else ", no model chosen so none is written")
                      + (f", skipping {', '.join(skip)}" if skip else ""), ui.C.GREY))
     if args.force_background_removal:
         log("background removal is FORCED for every prompt that does not ask for an "
@@ -548,6 +563,7 @@ def cmd_run(args) -> int:
         max_file_bytes=args.max_file_size * 1024 if args.max_file_size else None,
         embed_metadata=args.embed_metadata,
         metadata_skip=metadata.parse_skip(args.metadata_skip),
+        metadata_model=_run_model(args),
         debug_dir=paths.debug,
         after_item_fail_pause=args.after_item_fail_pause,
         after_item_fail_rotate_url=args.after_item_fail_rotate_url or None,
@@ -836,6 +852,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_meta.add_argument("--metadata-skip", action="append", default=[], metavar="KEYS",
                         help="comma-separated `meta` keys to leave out of the file "
                              "(e.g. prompt,model); repeatable")
+    p_meta.add_argument("--metadata-model", default=None, metavar="NAME",
+                        help="the generator model to record (the manifest's own "
+                             "`meta.model` is never used; omit to record none)")
     p_meta.add_argument("-v", "--verbose", action="store_true",
                         help="print a line for every file updated")
     p_meta.set_defaults(func=cmd_embed_metadata)

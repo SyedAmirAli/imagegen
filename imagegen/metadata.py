@@ -52,11 +52,16 @@ class MetadataError(ValueError):
     pass
 
 
-def from_job_extra(extra: dict | None, skip=()) -> dict | None:
+def from_job_extra(extra: dict | None, skip=(), model: str | None = None) -> dict | None:
     """The `meta` object of a job, when it has one.
 
     `skip` names manifest `meta` keys (as written in the manifest: "prompt",
     "tags", …) to leave out entirely — `--metadata-skip`.
+
+    `model` is the generator model this run actually used. A manifest's own
+    `meta.model` is never trusted — it is a guess written before the run —
+    so it is always dropped, and replaced only by a model the run was told to
+    use. With none chosen, the file gets no model at all.
     """
     if not isinstance(extra, dict):
         return None
@@ -64,7 +69,10 @@ def from_job_extra(extra: dict | None, skip=()) -> dict | None:
     for key in ("meta", "metadata"):
         value = extra.get(key)
         if isinstance(value, dict):
-            return normalise({k: v for k, v in value.items() if str(k).lower() not in skip})
+            meta = {k: v for k, v in value.items() if str(k).lower() != "model"}
+            if model and str(model).strip():
+                meta["model"] = str(model).strip()
+            return normalise({k: v for k, v in meta.items() if str(k).lower() not in skip})
     return None
 
 
