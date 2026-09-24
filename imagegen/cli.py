@@ -357,6 +357,59 @@ def cmd_validate(args) -> int:
     return 1 if errors else 0
 
 
+# Where a host (Sarathi) writes upscaled copies: <out>/upscale/<stem>.<ext>.
+UPSCALE_DIRNAME = "upscale"
+UPSCALE_EXTENSIONS = (".png", ".jpg", ".webp")
+
+
+def cmd_embed_metadata(args) -> int:
+    """Write each image's `meta` into files that already exist, without generating.
+
+    For batches saved before metadata embedding existed, or whose manifest
+    `meta` was edited afterwards. Output paths resolve exactly as `run` does
+    (same -o / --flat / output_dir rules), and upscaled copies under
+    `<out>/upscale/` are updated too. Holds the run lock, so it never races a
+    batch writing into the same folder.
+    """
+    from . import metadata
+
+    paths = _paths(args)
+    jobs = _select(_load(paths), args)
+    upscale_dir = paths.out_dir / UPSCALE_DIRNAME
+    counts = {"embedded": 0, "missing": 0, "no_meta": 0, "failed": 0}
+
+    log(f"embed-metadata  ·  {_sources_line(paths)}")
+    log(f"output   {paths.out_dir}")
+    with RunLock(paths.lock):
+        for job in jobs:
+            meta = metadata.from_job_extra(job.extra)
+            if not meta:
+                counts["no_meta"] += 1
+                continue
+            targets = [job.output] + [upscale_dir / f"{job.output.stem}{ext}"
+                                      for ext in UPSCALE_EXTENSIONS]
+            found = [t for t in targets if t.is_file()]
+            if not found:
+                counts["missing"] += 1
+                continue
+            for target in found:
+                note = metadata.embed(target, meta)
+                rel = target.relative_to(paths.out_dir).as_posix()
+                if note and note.startswith("metadata embedded"):
+                    counts["embedded"] += 1
+                    if args.verbose:
+                        log(f"  ✓ {rel}  · {note.removeprefix('metadata embedded: ')}")
+                else:
+                    counts["failed"] += 1
+                    log(f"  ✗ {rel}  · {note}", err=True)
+
+    log(f"done     {counts['embedded']} file(s) updated"
+        f"  ·  {counts['missing']} image(s) not generated yet"
+        f"  ·  {counts['no_meta']} without meta"
+        + (f"  ·  {counts['failed']} failed" if counts["failed"] else ""))
+    return 1 if counts["failed"] else 0
+
+
 def cmd_status(args) -> int:
     paths = _paths(args)
     if not paths.state.is_file():
@@ -753,6 +806,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_val = sub.add_parser("validate", help="parse every prompt file and report problems")
     add_common(p_val)
     p_val.set_defaults(func=cmd_validate)
+
+    p_meta = sub.add_parser(
+        "embed-metadata",
+        help="write each image's `meta` into files already generated",
+        description="Embed the manifest's per-image `meta` (title, description, author, "
+                    "keywords) into images that already exist, including upscaled copies "
+                    "under <out>/upscale/. Nothing is generated.")
+    add_common(p_meta)
+    p_meta.add_argument("--only", action="append", default=[], metavar="ID",
+                        help="only this id (repeatable)")
+    p_meta.add_argument("--match", action="append", default=[], metavar="GLOB",
+                        help="only ids / sources matching this glob (repeatable)")
+    p_meta.add_argument("-v", "--verbose", action="store_true",
+                        help="print a line for every file updated")
+    p_meta.set_defaults(func=cmd_embed_metadata)
 
     p_spec = sub.add_parser(
         "spec",

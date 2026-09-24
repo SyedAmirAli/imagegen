@@ -316,7 +316,8 @@ def embed(path: Path, meta: dict | None) -> str | None:
     tmp.replace(path)
     parts = [f for f in ("title", "description", "author", "copyright") if meta.get(f)]
     if meta.get("tags"):
-        parts.append(f"{len(meta['tags'])} keywords")
+        n = len(meta["tags"])
+        parts.append(f"{n} keyword{'' if n == 1 else 's'}")
     if meta.get("extra"):
         parts.append(f"{len(meta['extra'])} other")
     return "metadata embedded: " + ", ".join(parts)
